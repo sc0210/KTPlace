@@ -18,18 +18,39 @@ with exactly the packages CI installs (g++ 13, oneTBB, Boost, fmt,
 clang-format 18), so a build, a test run or a placement behaves the same on
 every machine. All it needs is Docker (Docker Desktop on macOS and Windows).
 
+**One shot: the whole environment.** `scripts/devenv.sh up` starts both
+containers -- the development container below and the web console further down
+-- waits for SSH, and compiles `build/bin/ktplace` inside. That single binary
+is what the shell and the browser both run, so there is nothing else to set up:
+
+```sh
+scripts/devenv.sh up
+#   shell   scripts/devenv.sh ssh        (ssh -p 2222 dev@127.0.0.1)
+#   web     http://127.0.0.1:8080
+#   engine  build/bin/ktplace
+```
+
+`scripts/devenv.sh build` recompiles later (extra arguments go to `make`), and
+`up --no-build` starts everything without compiling. Without a bash shell --
+PowerShell included -- the same two containers come up with compose, and the
+binary is then one `make` inside the container away:
+
+```sh
+docker compose up -d --build        # any OS, PowerShell included
+```
+
 **Development container.** A long-lived container with the repository mounted
 live at `/workspace`: edit on the host with your usual editor, and build, test
 and run in Linux over SSH.
 
 ```sh
-docker compose up -d --build        # any OS, PowerShell included
 ssh -p 2222 dev@127.0.0.1           # log in as `dev`, in /workspace
 make -j"$(nproc)" && make test      # (inside) build and test
 ktplace benchmark/ISPD_2005/adaptec1 -w output/adaptec1
 ```
 
-`docker compose stop` stops it, `docker compose down` removes the container.
+`docker compose stop` stops both containers, `docker compose down` removes
+them.
 
 - **SSH** listens on `127.0.0.1:2222` only (not the network) and accepts keys
   only. The key installed is `~/.ssh/id_ed25519.pub`; set `KTPLACE_SSH_PUBKEY` to
@@ -52,7 +73,8 @@ ktplace benchmark/ISPD_2005/adaptec1 -w output/adaptec1
 - **Without SSH**: `docker exec -it -u dev ktplace-dev bash -l`.
 - **Builds do not collide.** The container's `build/` and `build-cov/` are Docker
   volumes laid over the repository's, so a Linux build never mixes with anything
-  built on the host. Files under `output/` are shared with the host.
+  built on the host. Files under `output/` are shared with the host, and
+  `build/` is mounted into the web console too -- one compile, used by both.
 - **State that survives**: the build volumes and the SSH host key outlive
   `stop`, `down` and image rebuilds, so a new container needs no full recompile
   and ssh does not warn about a changed host key. The SSH key is copied in when
@@ -62,8 +84,9 @@ ktplace benchmark/ISPD_2005/adaptec1 -w output/adaptec1
   on `C:`; bind mounts from the Windows filesystem are slow.
 
 `scripts/devenv.sh` wraps all of this for a bash shell (macOS, Linux, WSL, Git
-Bash): `up` also picks whichever key you have and waits for SSH, and `ssh`,
-`exec`, `status`, `ssh-config`, `stop` and `down` do what they say.
+Bash): `up` picks whichever key you have, waits for SSH, starts the web console
+beside it and builds the binaries, and `build`, `ssh`, `exec`, `status`,
+`ssh-config`, `stop` and `down` do what they say.
 
 **One-shot CI run.** Building the default image target compiles a copy of the
 tree and runs the unit tests, exactly as CI does, without starting anything:
@@ -91,26 +114,39 @@ to mount other suites. The vendored adaptec1 is already inside, so this runs
 a full placement with no mounts at all. Like the `ci` build it runs on the
 host's own architecture -- arm64 on Apple Silicon, x86-64 otherwise.
 
-**Web console.** A browser front end for the run image: pick a design and an
-algorithm, start the placement, watch the transcript stream live, then open
-the gallery, final image and log the run produced. Everything is served from
-the container -- the console is a Python stdlib HTTP server layered on the
-`run` image, and the results are the engine's own output (`plots/index.html`,
-`final.png`, `placed.pl`, `ktplace.log`), not a re-implementation of it.
+**Web console.** A browser front end: pick a design and an algorithm, start the
+placement, watch the transcript stream live, then open the gallery, final image
+and log the run produced. Everything is served from the container -- the console
+is a Python stdlib HTTP server on a small runtime image, and the results are the
+engine's own output (`plots/index.html`, `final.png`, `placed.pl`,
+`ktplace.log`), not a re-implementation of it.
+
+The console carries no engine of its own: it runs the binary in the build
+volume the dev container compiles, so shell and browser see one ktplace rather
+than two that can drift apart. It starts with everything else:
+
+```sh
+scripts/devenv.sh up                # both containers and the binary
+# open http://127.0.0.1:8080
+```
+
+Compose starts it too, with no profile to remember:
+
+```sh
+docker compose up -d --build        # dev container + console
+docker compose up -d --build web    # console alone, against a built volume
+```
+
+and the image can be run by hand against that same volume:
 
 ```sh
 docker build --target web -t ktplace-web .
 docker run --rm -p 127.0.0.1:8080:8080 \
-    -v "$PWD/webui-runs:/ktplace/runs" ktplace-web
-# open http://127.0.0.1:8080
+    -v ktplace_build:/ktplace/build -v ktplace_web-runs:/ktplace/runs ktplace-web
 ```
 
-or, with compose (behind the `web` profile, so it does not start with the
-dev container):
-
-```sh
-docker compose --profile web up -d web
-```
+With no binary anywhere the page still loads and reports the engine as not
+built yet; `scripts/devenv.sh build` is what produces it.
 
 Runs land in `/ktplace/runs/<id>/`; mount a directory there (as above) to
 keep them across container restarts. The host-side mapping in the examples is
