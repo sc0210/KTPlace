@@ -8,3 +8,17 @@ ktplace.csh
 *.log
 logs/
 .claude/
+
+# History is not needed to build, and changes with every commit, which would
+# otherwise invalidate the cached build layer of the `ci` target each time.
+.git/
+
+# Downloaded benchmark suites can run to gigabytes and are sent with every build
+# otherwise. Only the vendored adaptec1 (a few MB, tracked in git) goes in, so the
+# `ci` image can still run it; mount other designs at run time instead.
+benchmark/*
+!benchmark/README.md
+!benchmark/fetch_benchmarks.py
+!benchmark/ISPD_2005
+benchmark/ISPD_2005/*
+!benchmark/ISPD_2005/adaptec1

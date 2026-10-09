@@ -853,15 +853,15 @@ bool FlowMgr::Impl::runPlacement(const std::string &algorithm, const std::string
             // can be judged on the metric the paper publishes rather than on the
             // intermediate upper bound, which moves for reasons that do not
             // survive legalization.
-            ktReportTable placed("Placement quality (after legalization and detail placement)");
-            placed.setHeaders({"metric", "value"});
-            placed.addRow({"HPWL detailed", fmt::format("{:.6}", hpwlFinalPlaced_)});
-            placed.addRow({"HPWL global upper bound", fmt::format("{:.6}", res.hpwlFinal)});
-            placed.addRow({"legalization + detail change",
+            ktReportTable quality("Placement quality (after legalization and detail placement)");
+            quality.setHeaders({"metric", "value"});
+            quality.addRow({"HPWL detailed", fmt::format("{:.6}", hpwlFinalPlaced_)});
+            quality.addRow({"HPWL global upper bound", fmt::format("{:.6}", res.hpwlFinal)});
+            quality.addRow({"legalization + detail change",
                            fmt::format("{:.2}%", 100.0 * (hpwlFinalPlaced_ - res.hpwlFinal) /
                                                      (res.hpwlFinal > 0.0 ? res.hpwlFinal : 1.0))});
-            placed.addRow({"paper reference (adaptec1)", "77410738"});
-            placed.emit();
+            quality.addRow({"paper reference (adaptec1)", "77410738"});
+            quality.emit();
         }
         return true;
 
@@ -909,14 +909,14 @@ bool FlowMgr::Impl::runPlacement(const std::string &algorithm, const std::string
         // turns it into a legal placement. That is the same split the paper uses.
         legalizeAndDetail(plotDir, regions);
         if (hpwlFinalPlaced_ > 0.0) {
-            ktReportTable placed("Placement quality (after legalization and detail placement)");
-            placed.setHeaders({"metric", "value"});
-            placed.addRow({"HPWL detailed", fmt::format("{:.6}", hpwlFinalPlaced_)});
-            placed.addRow({"HPWL from partitioning", fmt::format("{:.6}", res.hpwlFinal)});
-            placed.addRow({"legalization + detail change",
+            ktReportTable quality("Placement quality (after legalization and detail placement)");
+            quality.setHeaders({"metric", "value"});
+            quality.addRow({"HPWL detailed", fmt::format("{:.6}", hpwlFinalPlaced_)});
+            quality.addRow({"HPWL from partitioning", fmt::format("{:.6}", res.hpwlFinal)});
+            quality.addRow({"legalization + detail change",
                            fmt::format("{:.2}%", 100.0 * (hpwlFinalPlaced_ - res.hpwlFinal) /
                                                      (res.hpwlFinal > 0.0 ? res.hpwlFinal : 1.0))});
-            placed.emit();
+            quality.emit();
         }
         return true;
 
