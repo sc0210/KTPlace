@@ -1,0 +1,10 @@
+# Host build trees and run output: built by another compiler, or large, or both.
+build/
+build-cov/
+output/
+compile_commands.json
+ktplace.sh
+ktplace.csh
+*.log
+logs/
+.claude/

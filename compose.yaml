@@ -1,0 +1,44 @@
+# The Linux development container: the repository mounted live at /workspace,
+# reached over SSH on localhost:2222. Works the same from macOS, Windows and
+# Linux:
+#
+#   docker compose up -d --build          # any OS, PowerShell included
+#   ssh -p 2222 dev@127.0.0.1             # Windows 10+ ships this ssh client
+#
+# scripts/devenv.sh wraps the same steps for a bash shell (macOS, Linux, WSL,
+# Git Bash) and picks whichever SSH key you have.
+
+# Fixed, so the volumes are the same whatever the clone's directory is called;
+# compose otherwise names them after the directory.
+name: ktplace
+
+services:
+  dev:
+    build:
+      context: .
+      target: dev
+    image: ktplace-dev
+    container_name: ktplace-dev
+    hostname: ktplace-dev
+    ports:
+      # Loopback only: the container is reachable from this machine, not the LAN.
+      - "127.0.0.1:${KTPLACE_SSH_PORT:-2222}:22"
+    volumes:
+      # Edits on the host are seen in the container immediately, and the other
+      # way round.
+      - .:/workspace
+      # The Linux build trees are volumes laid over the repository's build
+      # directories, so the container's objects never land in -- or get mixed up
+      # with -- the host's own build/, which another compiler produced.
+      - build:/workspace/build
+      - build-cov:/workspace/build-cov
+      - ssh-host-keys:/var/lib/ktplace-ssh
+      # The public key allowed to log in. Compose expands ~ to the home
+      # directory on every OS; point KTPLACE_SSH_PUBKEY elsewhere for another key.
+      - ${KTPLACE_SSH_PUBKEY:-~/.ssh/id_ed25519.pub}:/run/ktplace/authorized_keys:ro
+    restart: unless-stopped
+
+volumes:
+  build:
+  build-cov:
+  ssh-host-keys:
