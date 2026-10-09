@@ -2,14 +2,16 @@
 """KTPlace web console.
 
 Run the placement engine from a browser and review what it wrote. The engine is
-invoked directly -- this server and ktplace share one container -- every run
-gets its own directory under the runs root, and the transcript streams to the
-page as it is produced. The static gallery ktplace itself writes
+invoked directly -- no second service, and no copy of the binary in this image
+either: compose gives the server the dev container's build volume, so the
+console runs the tree `make` just built (resolve_bin says where from). Every
+run gets its own directory under the runs root, and the transcript streams to
+the page as it is produced. The static gallery ktplace itself writes
 (plots/index.html) is served out of the run directory, so the review half is the
 engine's own output, not a second implementation of it.
 
-Stdlib only: python3 is the only dependency beyond what the run image already
-carries.
+Stdlib only: python3 is the only dependency beyond what the runtime image
+already carries.
 
 Endpoints
   GET  /                       the console page
@@ -28,6 +30,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -42,7 +45,10 @@ BENCH_ROOT = pathlib.Path(os.environ.get("KTPLACE_BENCH_ROOT", str(HOME / "bench
 RUN_ROOT = pathlib.Path(os.environ.get("KTPLACE_RUN_ROOT", str(HOME / "runs"))).resolve()
 HOST = os.environ.get("KTPLACE_WEB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("KTPLACE_WEB_PORT", "8080"))
-KTPLACE_BIN = os.environ.get("KTPLACE_BIN", "ktplace")
+# Set to say which engine to run; when unset it is resolved per run, see
+# resolve_bin(). The image ships none -- the console runs the tree the dev
+# container compiles.
+KTPLACE_BIN = os.environ.get("KTPLACE_BIN")
 MAX_RUNS = max(1, int(os.environ.get("KTPLACE_WEB_MAX_RUNS", "1")))
 ALGORITHMS = ("simpl", "ntuplace1")  # what FlowMgr::runPlacement dispatches on
 RUN_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{8}$")
@@ -51,6 +57,25 @@ WEBUI_DIR = pathlib.Path(__file__).resolve().parent
 STATIC_DIR = WEBUI_DIR / "static"
 
 _MARKERS = (".def", ".def.gz", ".nodes", ".nodes.gz")
+
+
+def resolve_bin() -> str | None:
+    """Where the engine comes from. Decided on every run, not once at startup:
+    the console is up before the first compile finishes, and a build while it
+    runs should be picked up without a restart.
+
+    The order says what the design is: an explicit KTPLACE_BIN, then the build
+    volume compose mounts at HOME/build -- the tree the dev container compiles,
+    and the one this container is meant to run -- then the repository's own
+    build/ for a bare-metal server, and only then PATH.
+    """
+    if KTPLACE_BIN:
+        return KTPLACE_BIN
+    for candidate in (HOME / "build" / "bin" / "ktplace",
+                      WEBUI_DIR.parent / "build" / "bin" / "ktplace"):
+        if os.access(candidate, os.X_OK):
+            return str(candidate)
+    return shutil.which("ktplace")
 
 
 # ------------------------------------------------------------------- runs
@@ -81,7 +106,20 @@ def new_id() -> str:
     return f"{stamp}-{uuid.uuid4().hex[:8]}"
 
 
+class EngineNotBuilt(RuntimeError):
+    """The console is up and the engine is not yet -- the state of the seconds
+    between `docker compose up` and the first `make` finishing. Reported as
+    such (503, retried by the user) rather than as a fault in the server."""
+
+
 def launch(benchmark: str, target: str, algorithm: str, verbose: bool) -> Run:
+    # Resolved first, so a console that is up but whose engine is not built
+    # yet reports that instead of leaving an empty run directory behind.
+    binary = resolve_bin()
+    if not binary:
+        raise EngineNotBuilt(
+            "ktplace is not built yet -- run scripts/devenv.sh up, or `make` "
+            "in the dev container, then start the run again")
     rid = new_id()
     work = RUN_ROOT / rid
     work.mkdir(parents=True, exist_ok=True)
@@ -90,11 +128,11 @@ def launch(benchmark: str, target: str, algorithm: str, verbose: bool) -> Run:
     try:
         (work / "request.json").write_text(
             json_dumps({**meta, "id": rid, "cmd": " ".join(
-                [KTPLACE_BIN, benchmark, "-a", algorithm, "-w", str(work)]
+                [binary, benchmark, "-a", algorithm, "-w", str(work)]
                 + (["-v"] if verbose else []))}))
     except OSError:
         pass
-    args = [KTPLACE_BIN, target, "-a", algorithm, "-w", str(work)]
+    args = [binary, target, "-a", algorithm, "-w", str(work)]
     if verbose:
         args.append("-v")
     # The engine logs to ktplace.log, which it flushes after every record; that
@@ -366,6 +404,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(409, {"error": "a run is already in progress"})
         try:
             run = launch(benchmark, str(target), algorithm, verbose)
+        except EngineNotBuilt as e:
+            return self._json(503, {"error": str(e)})
         except OSError as e:
             return self._json(500, {"error": f"could not start ktplace: {e}"})
         return self._json(201, self._run_view(run))
@@ -419,7 +459,8 @@ def main() -> None:
     index_existing_runs()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"KTPlace web console on http://{HOST}:{PORT}  "
-          f"(benchmarks: {BENCH_ROOT}, runs: {RUN_ROOT}, ktplace: {KTPLACE_BIN})",
+          f"(benchmarks: {BENCH_ROOT}, runs: {RUN_ROOT}, "
+          f"ktplace: {resolve_bin() or 'not built yet'})",
           flush=True)
     try:
         server.serve_forever()

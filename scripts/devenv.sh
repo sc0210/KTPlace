@@ -1,19 +1,29 @@
 #!/usr/bin/env bash
-# Manage the Linux development container (Dockerfile target `dev`, compose.yaml).
+# Manage the Docker environment: the Linux development container, the web
+# console beside it, and the binaries both run (Dockerfile targets `dev` and
+# `web`, driven through compose.yaml).
 #
-#   scripts/devenv.sh up          build if needed, start, and print how to connect
-#   scripts/devenv.sh ssh [cmd]   SSH in, or run one command over SSH (a shell
-#                                 string, as with ssh itself: 'make && make test')
-#   scripts/devenv.sh exec [cmd]  the same through `docker exec`, no SSH involved
-#   scripts/devenv.sh status      is it running, and on which port
-#   scripts/devenv.sh ssh-config  print an ~/.ssh/config entry for it
-#   scripts/devenv.sh stop        stop it; the container and its volumes are kept
-#   scripts/devenv.sh down        remove the container; the build volumes are kept
+#   scripts/devenv.sh up [--no-build]  start both containers, wait for SSH,
+#                                      then compile build/bin/ktplace inside
+#                                      the dev container (the binary the web
+#                                      console runs too)
+#   scripts/devenv.sh build [targets]  make in the dev container, as `up` did
+#   scripts/devenv.sh ssh [cmd]        SSH in, or run one command over SSH (a
+#                                      shell string, as with ssh itself:
+#                                      'make && make test')
+#   scripts/devenv.sh exec [cmd]       the same through `docker exec`, no SSH
+#                                      involved
+#   scripts/devenv.sh status           what is running, and on which ports
+#   scripts/devenv.sh ssh-config       print an ~/.ssh/config entry for it
+#   scripts/devenv.sh stop             stop them; containers and volumes kept
+#   scripts/devenv.sh down             remove the containers; volumes kept
 #
 # Environment:
 #   KTPLACE_SSH_PUBKEY  public key to install (default: the first of
 #                       ~/.ssh/id_ed25519.pub, id_ecdsa.pub, id_rsa.pub)
 #   KTPLACE_SSH_PORT    host port for SSH, bound to 127.0.0.1 (default 2222)
+#   KTPLACE_WEB_PORT    host port for the web console, bound to 127.0.0.1
+#                       (default 8080)
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -65,6 +75,18 @@ compose() {
     fi
 }
 
+# The one compile, in the dev container against the live-mounted repository:
+# build/ is a volume there, so the objects are Linux ones, survive a container
+# restart, and are the same tree the web console runs the engine from (see
+# compose.yaml). Extra arguments are passed to make as targets.
+build_tree() {
+    local flags=(-i)
+    local targets="$*"
+    [ -t 1 ] && flags=(-it)
+    docker exec "${flags[@]}" -u dev -w /workspace ktplace-dev \
+        bash -lc "make -j\"\$(nproc)\" $targets"
+}
+
 # The key the container was given is the one to offer: with a non-default
 # KTPLACE_SSH_PUBKEY, ssh's default identities would all be refused.
 ssh_opts() {
@@ -104,11 +126,27 @@ case "${1:-}" in
             fi
             exit 1
         fi
+
+        # The compile, after SSH is known to work so a failure can be fixed
+        # the usual way. build/ is a volume, so this is incremental: only what
+        # the sources changed since the last time needs recompiling, and the
+        # web console picks the result up on its next run, without a restart.
+        if [ "${2:-}" != "--no-build" ]; then
+            echo
+            echo "devenv: building build/bin/ktplace in the dev container..."
+            if ! build_tree; then
+                echo "devenv: the build failed. Fix it with scripts/devenv.sh build," >&2
+                echo "        then start the console -- it runs the same binary." >&2
+                exit 1
+            fi
+        fi
+
         echo
-        echo "Ready. Connect with:"
-        echo "  scripts/devenv.sh ssh"
-        echo "  ssh -p $port dev@127.0.0.1"
-        echo "First build inside it:  make -j\"\$(nproc)\" && make test"
+        echo "Ready. One environment, both halves:"
+        echo "  shell   scripts/devenv.sh ssh        (ssh -p $port dev@127.0.0.1)"
+        echo "  web     http://127.0.0.1:${KTPLACE_WEB_PORT:-8080}"
+        echo "  engine  build/bin/ktplace -- one Linux build, shared by both"
+        echo "Rebuild with scripts/devenv.sh build; the console needs no restart."
         ;;
     ssh)
         shift
@@ -133,6 +171,14 @@ case "${1:-}" in
         fi
         exec docker exec "${flags[@]}" -u dev -w /workspace ktplace-dev bash -lc "$*"
         ;;
+    build)
+        shift
+        if [ -z "$(compose ps -q dev 2>/dev/null)" ]; then
+            echo "devenv: the dev container is not running; run scripts/devenv.sh up." >&2
+            exit 1
+        fi
+        build_tree "$@"
+        ;;
     status)
         compose ps
         ;;
@@ -155,7 +201,7 @@ EOF
         compose down
         ;;
     *)
-        sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
         exit 2
         ;;
 esac

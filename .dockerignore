@@ -10,6 +10,12 @@ logs/
 .claude/
 .opencode/
 
+# Byte-code a host Python wrote: the container's own interpreter is a different
+# version and ignores it, so it is only weight. `**/`, unlike .gitignore, has
+# to be spelled out to reach into subdirectories.
+**/__pycache__/
+**/*.pyc
+
 # History is not needed to build, and changes with every commit, which would
 # otherwise invalidate the cached build layer of the `ci` target each time.
 .git/
