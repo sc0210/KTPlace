@@ -319,6 +319,21 @@ CImg, and the result is reproducible from `ktplace` alone.
 | `KTPLACE_ANIM_DELAY_CS` | GIF frame delay, in hundredths of a second |
 | `KTPLACE_FINAL_ZOOM` | final still scale, vs 768x768 (default 8, so 6144x6144) |
 | `KTPLACE_FINAL_PPM` | also write the lossless 113 MB PPM beside the PNG |
+| `KTPLACE_SIMPL_CG_EVERY` | SVG frame every N conjugate-gradient iterates; `0` turns them off |
+| `KTPLACE_SIMPL_TRACE_EVERY` | SVG frame every N global iterations; `0` turns them off |
+
+The frames are written on by default, and on a large design they are most of
+the global placement's time -- every CG iterate writes one line per cell. When
+only the placement matters, turn them off; the result is the same and the final
+still is still written:
+
+```sh
+KTPLACE_ANIM=0 KTPLACE_SIMPL_CG_EVERY=0 KTPLACE_SIMPL_TRACE_EVERY=0 \
+    ktplace benchmark/ISPD_2005/adaptec1 -w output/adaptec1
+```
+
+On adaptec1 (Apple M-series, 10 cores) that takes the `place` phase from 60 s to
+38 s and the plot directory from 1.2 GB to 273 MB, with the same HPWL.
 
 Rows are drawn behind the cells on any frame whose placement is genuinely on a
 row grid, and are left out when it is not — see `rowBands()` in
