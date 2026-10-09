@@ -10,6 +10,70 @@ make            # builds build/bin/ktplace
 make rebuild    # clean + rebuild
 ```
 
+### Any OS: the Docker environment
+
+The build targets Linux. On macOS or Windows -- or on a Linux whose packages
+differ from CI's -- work inside the Docker environment instead: Ubuntu 24.04
+with exactly the packages CI installs (g++ 13, oneTBB, Boost, fmt,
+clang-format 18), so a build, a test run or a placement behaves the same on
+every machine. All it needs is Docker (Docker Desktop on macOS and Windows).
+
+**Development container.** A long-lived container with the repository mounted
+live at `/workspace`: edit on the host with your usual editor, and build, test
+and run in Linux over SSH.
+
+```sh
+docker compose up -d --build        # any OS, PowerShell included
+ssh -p 2222 dev@127.0.0.1           # log in as `dev`, in /workspace
+make -j"$(nproc)" && make test      # (inside) build and test
+ktplace benchmark/ISPD_2005/adaptec1 -w output/adaptec1
+```
+
+`docker compose stop` stops it, `docker compose down` removes the container.
+
+- **SSH** listens on `127.0.0.1:2222` only (not the network) and accepts keys
+  only. The key installed is `~/.ssh/id_ed25519.pub`; set `KTPLACE_SSH_PUBKEY` to
+  use another, and `KTPLACE_SSH_PORT` to change the port. Create a key with
+  `ssh-keygen -t ed25519` if you have none. Windows 10 and later ship the `ssh`
+  client.
+- **Editors and scripts**: with an `~/.ssh/config` entry (below) `ssh ktplace-dev`,
+  `scp`, `rsync` and VS Code's *Remote-SSH* all work against it, and
+  `ssh ktplace-dev 'make test'` runs one command in the repository with
+  `ktplace` on `PATH`.
+
+  ```
+  Host ktplace-dev
+      HostName 127.0.0.1
+      Port 2222
+      User dev
+      HostKeyAlias ktplace-dev
+      IdentityFile ~/.ssh/id_ed25519
+  ```
+- **Without SSH**: `docker exec -it -u dev ktplace-dev bash -l`.
+- **Builds do not collide.** The container's `build/` and `build-cov/` are Docker
+  volumes laid over the repository's, so a Linux build never mixes with anything
+  built on the host. Files under `output/` are shared with the host.
+- **State that survives**: the build volumes and the SSH host key outlive
+  `stop`, `down` and image rebuilds, so a new container needs no full recompile
+  and ssh does not warn about a changed host key. The SSH key is copied in when
+  the container starts; after changing it, run `down` and then `up`.
+- **Windows**: `.gitattributes` keeps every file's line endings LF on checkout,
+  which the Linux side needs. For speed, keep the clone inside WSL 2 rather than
+  on `C:`; bind mounts from the Windows filesystem are slow.
+
+`scripts/devenv.sh` wraps all of this for a bash shell (macOS, Linux, WSL, Git
+Bash): `up` also picks whichever key you have and waits for SSH, and `ssh`,
+`exec`, `status`, `ssh-config`, `stop` and `down` do what they say.
+
+**One-shot CI run.** Building the default image target compiles a copy of the
+tree and runs the unit tests, exactly as CI does, without starting anything:
+
+```sh
+docker build -t ktplace .
+docker run -v "$PWD/output:/ktplace/output" ktplace \
+    ktplace benchmark/ISPD_2005/adaptec1 -w output/adaptec1
+```
+
 A successful build also writes two environment helpers into the repository
 root. Source the one for your shell and the engine is callable by name:
 

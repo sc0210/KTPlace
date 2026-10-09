@@ -1,0 +1,13 @@
+# Check every text file out with LF line endings, on every OS.
+#
+# The Docker development container builds the host's checkout through a bind
+# mount, so the files it reads are whatever git wrote on the host. Git for
+# Windows converts to CRLF by default, and a CRLF shell script or Makefile fails
+# inside Linux ("/bin/sh^M: not found", "missing separator"). The repository
+# already stores LF, so this changes no content; it only stops the conversion.
+* text=auto eol=lf
+
+# Binary, whatever the heuristic says.
+*.gz  binary
+*.png binary
+*.gif binary
