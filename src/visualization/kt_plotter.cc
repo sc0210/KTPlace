@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -28,6 +29,8 @@
 #include "visualization/CImg.h"
 #include "visualization/kt_gif.h"
 
+#include <fmt/format.h>
+#include <oneapi/tbb/parallel_for.h>
 #include <zlib.h>
 
 using cimg_library::CImg;
@@ -55,10 +58,13 @@ constexpr double kImageH = 768.0;
 /// Filename stem of the per-iteration stills that writeAnimatedGif() collects.
 constexpr const char *kFramePrefix = "frame_";
 
+// fmt::format rather than an ostringstream: a frame calls this four times per
+// cell, and constructing a stream per number was most of the cost of writing one.
+// "{:.Nf}" is the same correctly rounded fixed notation as std::fixed with
+// setprecision(N), so the text is unchanged. Qualified, because inside this
+// namespace `fmt` names this function rather than the library.
 std::string fmt(double v, int prec = 1) {
-    std::ostringstream os;
-    os << std::fixed << std::setprecision(prec) << v;
-    return os.str();
+    return ::fmt::format("{:.{}f}", v, prec);
 }
 
 std::string sci(double v) {
@@ -1216,21 +1222,37 @@ void writeFrameSvg(const std::string &path, const Graph &g, const std::vector<fl
     // touching exactly, so without it a whole region reads as one blue shape; the
     // opacity is kept low and the width small, because a heavy outline turns the
     // placement into a diagram of boxes rather than a picture of cells.
+    //
+    // This is the bulk of a frame -- one line per cell, and every conjugate-
+    // gradient iterate writes a frame -- so the lines are formatted in parallel,
+    // one string per fixed-size chunk of vertices, and the chunks are written in
+    // vertex order. The file is byte-for-byte what a serial loop writes.
     {
         out << "<g fill=\"#4fc3f7\" stroke=\"#0b3d54\" stroke-opacity=\"0.75\""
             << " stroke-width=\"0.6\">\n";
-        for (std::size_t v = 0; v < nv; ++v) {
-            const Vertex &vert = g.getVertex(v);
-            if (vert.type != VertexType::Cell || vert.isFixed || vert.isTerminal) {
-                continue;
+        constexpr std::size_t kChunk = 4096;
+        std::vector<std::string> chunks((nv + kChunk - 1) / kChunk);
+        tbb::parallel_for(std::size_t{0}, chunks.size(), [&](std::size_t c) {
+            std::string &text = chunks[c];
+            const std::size_t end = std::min(nv, (c + 1) * kChunk);
+            for (std::size_t v = c * kChunk; v < end; ++v) {
+                const Vertex &vert = g.getVertex(v);
+                if (vert.type != VertexType::Cell || vert.isFixed || vert.isTerminal) {
+                    continue;
+                }
+                // Exact size, as in the raster path, so the two agree and so a cell
+                // is never drawn wider than it is.
+                const double w = std::max(0.75, vert.width * vp.sx);
+                const double h = std::max(0.75, vert.height * vp.sy);
+                ::fmt::format_to(std::back_inserter(text),
+                                 "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/>\n",
+                                 fmt(toPxX(vp, x[v]), prec),
+                                 fmt(toPxY(vp, y[v] + vert.height), prec), fmt(w, prec),
+                                 fmt(h, prec));
             }
-            // Exact size, as in the raster path, so the two agree and so a cell is
-            // never drawn wider than it is.
-            const double w = std::max(0.75, vert.width * vp.sx);
-            const double h = std::max(0.75, vert.height * vp.sy);
-            out << "<rect x=\"" << fmt(toPxX(vp, x[v]), prec) << "\" y=\""
-                << fmt(toPxY(vp, y[v] + vert.height), prec) << "\" width=\"" << fmt(w, prec)
-                << "\" height=\"" << fmt(h, prec) << "\"/>\n";
+        });
+        for (const std::string &text : chunks) {
+            out << text;
         }
         out << "</g>\n";
     }
