@@ -151,6 +151,38 @@ COPY --from=build /ktplace/benchmark/ISPD_2005/adaptec1 benchmark/ISPD_2005/adap
 ENTRYPOINT ["ktplace"]
 CMD ["--help"]
 
+# ---------------------------------------------------------------------- web
+# The run image plus the web console that drives it: ktplace on PATH, the
+# Python server (stdlib only, nothing to install beyond python3), and the
+# vendored adaptec1, so a browser on the host can start a placement, watch the
+# transcript stream, and open the gallery the engine itself writes.
+#
+#   docker build --target web -t ktplace-web .
+#   docker run --rm -p 127.0.0.1:8080:8080 \
+#       -v "$PWD/webui-runs:/ktplace/runs" ktplace-web
+#
+# Runs are kept under /ktplace/runs; mount something there to keep them across
+# container restarts. Bind port to loopback only unless you want the console on
+# the network.
+FROM run AS web
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY webui /ktplace/webui
+WORKDIR /ktplace
+# 0.0.0.0 inside the container: Docker's published port reaches the container's
+# eth0, not its loopback, so a loopback bind would make the console unreachable.
+# The security boundary is the host-side mapping (127.0.0.1 in the README and
+# compose examples); the code default remains 127.0.0.1 for bare-metal use.
+ENV PYTHONUNBUFFERED=1 \
+    KTPLACE_WEB_HOST=0.0.0.0 \
+    KTPLACE_WEB_PORT=8080
+EXPOSE 8080
+ENTRYPOINT ["python3", "/ktplace/webui/server.py"]
+CMD []
+
 # ------------------------------------------------------------------------ ci
 # Last, so it is what a plain `docker build .` produces. The build itself
 # happened in the stage above; what is left here is the test run.

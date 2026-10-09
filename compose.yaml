@@ -46,7 +46,27 @@ services:
           create_host_path: false
     restart: unless-stopped
 
+  # The web console: runs ktplace inside the container and serves the results.
+  # Behind a profile so plain `docker compose up` stays the SSH dev container:
+  #   docker compose --profile web up -d web
+  web:
+    build:
+      context: .
+      target: web
+    image: ktplace-web
+    container_name: ktplace-web
+    hostname: ktplace-web
+    profiles: ["web"]
+    ports:
+      - "127.0.0.1:${KTPLACE_WEB_PORT:-8080}:8080"
+    volumes:
+      # Runs survive `down`/restarts; the server also adopts existing runs on
+      # start, so history persists.
+      - web-runs:/ktplace/runs
+    restart: unless-stopped
+
 volumes:
   build:
   build-cov:
   ssh-host-keys:
+  web-runs:

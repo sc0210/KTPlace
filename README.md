@@ -91,6 +91,35 @@ to mount other suites. The vendored adaptec1 is already inside, so this runs
 a full placement with no mounts at all. Like the `ci` build it runs on the
 host's own architecture -- arm64 on Apple Silicon, x86-64 otherwise.
 
+**Web console.** A browser front end for the run image: pick a design and an
+algorithm, start the placement, watch the transcript stream live, then open
+the gallery, final image and log the run produced. Everything is served from
+the container -- the console is a Python stdlib HTTP server layered on the
+`run` image, and the results are the engine's own output (`plots/index.html`,
+`final.png`, `placed.pl`, `ktplace.log`), not a re-implementation of it.
+
+```sh
+docker build --target web -t ktplace-web .
+docker run --rm -p 127.0.0.1:8080:8080 \
+    -v "$PWD/webui-runs:/ktplace/runs" ktplace-web
+# open http://127.0.0.1:8080
+```
+
+or, with compose (behind the `web` profile, so it does not start with the
+dev container):
+
+```sh
+docker compose --profile web up -d web
+```
+
+Runs land in `/ktplace/runs/<id>/`; mount a directory there (as above) to
+keep them across container restarts. The host-side mapping in the examples is
+loopback-only, so the console is visible only from this machine; inside the
+container the server listens on `0.0.0.0` with the port from
+`KTPLACE_WEB_PORT` (8080), and `KTPLACE_WEB_HOST` overrides the bind address.
+Mount other benchmark suites at `/ktplace/benchmark` to make them selectable,
+exactly as with the `run` image.
+
 A successful build also writes two environment helpers into the repository
 root. Source the one for your shell and the engine is callable by name:
 

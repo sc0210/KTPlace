@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KTPlace web console</title>
+<style>
+:root {
+  --bg: #0b0f12; --panel: #11171c; --line: #22303a; --text: #d7e0e6;
+  --muted: #7f929e; --accent: #4a9eff; --ok: #3fba7d; --bad: #e5524c; --run: #e0a94a;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; align-items: baseline; gap: 14px; padding: 14px 20px;
+  border-bottom: 1px solid var(--line); }
+header h1 { margin: 0; font-size: 17px; color: #fff; letter-spacing: .3px; }
+header .sub { color: var(--muted); font-size: 12px; }
+main { display: grid; grid-template-columns: 320px 1fr; gap: 16px; padding: 16px 20px; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+section > h2 { margin: 0; padding: 10px 14px; font-size: 12px; letter-spacing: 1px;
+  text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line); }
+.pad { padding: 14px; }
+label { display: block; margin: 10px 0 4px; font-size: 12px; color: var(--muted); }
+input[type=text], select { width: 100%; padding: 7px 9px; background: #0d1216;
+  color: var(--text); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+input[type=checkbox] { accent-color: var(--accent); }
+button { cursor: pointer; border: 1px solid var(--line); border-radius: 6px;
+  padding: 8px 14px; font-size: 13px; background: #16202a; color: var(--text); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #04121f;
+  font-weight: 600; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+.hint { font-size: 12px; color: var(--muted); margin-top: 10px; }
+#statusline { display: flex; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line);
+  align-items: center; }
+.pill { padding: 2px 9px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+.pill.running { background: rgba(224,169,74,.15); color: var(--run); border: 1px solid var(--run); }
+.pill.done    { background: rgba(63,188,125,.15); color: var(--ok);  border: 1px solid var(--ok); }
+.pill.failed  { background: rgba(229,82,76,.15); color: var(--bad); border: 1px solid var(--bad); }
+.pill.idle    { background: rgba(127,146,158,.12); color: var(--muted); border: 1px solid var(--line); }
+#summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px; padding: 14px; }
+.stat { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: #0d1216; }
+.stat .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+.stat .v { font-size: 17px; font-weight: 600; color: #fff; margin-top: 2px;
+  font-family: var(--mono); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+#artifacts { padding: 10px 14px 14px; }
+#artifacts li { margin: 5px 0; }
+#logwrap { padding: 0; }
+#log { margin: 0; padding: 12px 14px; height: 480px; overflow: auto; white-space: pre-wrap;
+  font: 12px/1.45 var(--mono); color: #c9d4db; }
+#anim { padding: 0 14px 4px; }
+#anim .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .5px; margin: 4px 0 8px; }
+#anim img { max-width: 960px; width: 100%; border: 1px solid var(--line);
+  border-radius: 6px; background: #101418; display: block; margin: 0 auto; }
+#runs { list-style: none; margin: 0; padding: 6px; }
+#runs li { padding: 8px 10px; border-radius: 6px; cursor: pointer; }
+#runs li:hover { background: #182330; }
+#runs li.active { background: #1b2a3a; }
+#runs .rname { font-family: var(--mono); font-size: 12px; }
+#runs .rmeta { font-size: 11px; color: var(--muted); display: flex; gap: 8px; margin-top: 3px;
+  align-items: center; }
+footer { padding: 12px 20px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
+code { font-family: var(--mono); }
+#empty { color: var(--muted); padding: 20px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>KTPlace web console</h1>
+  <span class="sub">run the placement engine, watch it work, review what it wrote</span>
+</header>
+<main>
+  <div>
+    <section>
+      <h2>New run</h2>
+      <div class="pad">
+        <label for="bench">Benchmark (input directory)</label>
+        <select id="bench"></select>
+        <label for="alg">Algorithm</label>
+        <select id="alg">
+          <option value="simpl">simpl (default)</option>
+          <option value="ntuplace1">ntuplace1</option>
+        </select>
+        <label><input type="checkbox" id="verbose" value="1"> verbose (trace log +
+        console diagnostics)</label>
+        <div style="margin-top:12px"><button class="primary" id="runbtn">Run placement</button></div>
+        <div class="hint" id="benchnote"></div>
+      </div>
+    </section>
+    <section style="margin-top:16px">
+      <h2>Runs</h2>
+      <ul id="runs"></ul>
+      <div id="empty">No runs yet.</div>
+    </section>
+  </div>
+
+  <div>
+    <section id="detail"> <!-- populated by JS -->
+      <h2>Run</h2>
+      <div id="statusline">
+        <span class="pill idle" id="statepill">—</span>
+        <span id="runmeta" style="color:var(--muted);font-size:12px"></span>
+      </div>
+      <div id="summary"></div>
+      <div id="anim"></div>
+      <div id="artifacts"></div>
+      <div id="logwrap"><pre id="log" tabindex="0"></pre></div>
+    </section>
+  </div>
+</main>
+<footer>
+  Everything runs in the container; ktplace is invoked with
+  <code>&lt;design&gt; -a &lt;algorithm&gt; -w runs/&lt;id&gt;</code>. The gallery,
+  final image and transcripts are the engine's own output, served from the run
+  directory.
+</footer>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const logEl = $("log");
+let current = null;       // run id being watched
+let pollTimer = null;
+let runsListTimer = null;
+let stick = true;         // autoscroll while the user is at the bottom
+
+const ansi = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (r.status === 204) return null;
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || ("HTTP " + r.status));
+  return body;
+}
+const esc = (s) => String(s).replace(/[&<>"]/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function fmtTime(ms) {
+  if (!ms) return "—";
+  return new Date(ms * 1000).toLocaleString();
+}
+function fmtElapsed(s) {
+  if (s == null) return "—";
+  const m = Math.floor(s / 60), r = Math.round(s % 60);
+  return m ? `${m}m ${r}s` : `${r}s`;
+}
+
+// ---------------------------------------------------------------- form
+async function loadBenchmarks() {
+  try {
+    const data = await api("/api/benchmarks");
+    const sel = $("bench"), note = $("benchnote");
+    sel.innerHTML = "";
+    if (!data.designs.length) {
+      sel.innerHTML = '<option value="">(none found)</option>';
+      note.textContent = "No design directories found under " + data.root +
+        ". Mount a benchmark directory into the container.";
+      return;
+    }
+    for (const d of data.designs) {
+      const o = document.createElement("option");
+      o.value = d; o.textContent = d;
+      sel.appendChild(o);
+    }
+    const fav = data.designs.find((d) => d.includes("adaptec1"))
+              || data.designs.find((d) => d.toLowerCase().includes("ibm01"));
+    if (fav) sel.value = fav;
+    note.textContent = `Serving ${data.designs.length} design(s) from ` + data.root;
+  } catch (e) { $("benchnote").textContent = "Could not list benchmarks: " + e.message; }
+}
+
+async function submitRun() {
+  const btn = $("runbtn");
+  btn.disabled = true;
+  try {
+    const body = {
+      benchmark: $("bench").value,
+      algorithm: $("alg").value,
+      verbose: $("verbose").checked,
+    };
+    if (!body.benchmark) throw new Error("choose a benchmark");
+    const run = await api("/api/runs", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    selectRun(run.id);
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ----------------------------------------------------------------- runs
+async function refreshRuns() {
+  try {
+    const data = await api("/api/runs");
+    $("runs").innerHTML = "";
+    $("empty").style.display = data.runs.length ? "none" : "block";
+    const root = window.location.pathname.replace(/\/+$/, "");
+    for (const r of data.runs) {
+      const li = document.createElement("li");
+      if (r.id === current) li.className = "active";
+      li.innerHTML =
+        `<div class="rname">${esc(r.id)}</div>` +
+        `<div class="rmeta"><span class="pill ${esc(r.status)}">${esc(r.status)}</span>` +
+        `<span>${esc(r.benchmark)}</span><span>${esc(r.algorithm)}</span>` +
+        `<span>${fmtElapsed(r.elapsed)}</span></div>`;
+      li.onclick = () => selectRun(r.id);
+      $("runs").appendChild(li);
+    }
+    if (data.running >= data.maxConcurrent) {
+      $("runbtn").disabled = true;
+      $("runbtn").textContent = "Run placement (one run at a time)";
+    } else {
+      $("runbtn").disabled = false;
+      $("runbtn").textContent = "Run placement";
+    }
+  } catch (e) { /* harness offscreen; the list refreshes again shortly */ }
+}
+
+function selectRun(id) {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  current = id;
+  logEl.textContent = "";
+  $("runmeta").textContent = "";
+  $("artifacts").innerHTML = "";
+  $("summary").innerHTML = "";
+  $("anim").innerHTML = "";
+  $("statepill").className = "pill idle";
+  $("statepill").textContent = "…";
+  poll(id);
+  refreshRuns();
+}
+
+async function poll(id) {
+  if (id !== current) return;
+  let offset = 0;
+  let done = false;
+  const tick = async () => {
+    try {
+      const data = await api(`/api/runs/${id}/log?offset=${offset}`);
+      if (data.offset > offset) {
+        logEl.textContent += ansi(data.text);
+        offset = data.offset;
+        if (stick) logEl.scrollTop = logEl.scrollHeight;
+      }
+      if (data.done) {        // finished: one final state fetch and stop
+        clearInterval(pollTimer); pollTimer = null;
+        const run = await api(`/api/runs/${id}`);
+        renderDetail(run);
+        refreshRuns();
+        return;
+      }
+    } catch (e) {
+      // run torn down mid-poll; retry then give up
+    }
+  };
+  renderDetail((await api(`/api/runs/${id}`)));
+  await tick();
+  pollTimer = setInterval(tick, 700);
+}
+
+function renderDetail(run) {
+  const pill = $("statepill");
+  pill.className = "pill " + run.status;
+  pill.textContent = run.status + (run.exitCode == null ? "" : ` (exit ${run.exitCode})`);
+  $("runmeta").textContent =
+    `${fmtTime(run.started)} · ${run.benchmark} · ${run.algorithm}` +
+    (run.verbose ? " · verbose" : "") + ` · ${fmtElapsed(run.elapsed)}`;
+
+  const sum = $("summary");
+  sum.innerHTML = "";
+  const stats = {overlaps: "overlapping pairs", verdict: "verdict",
+                 hpwl: "detailed HPWL", unplaced: "unplaced", offRow: "cells off rows"};
+  for (const k of Object.keys(stats)) {
+    if (run.summary && run.summary[k] != null) {
+      const d = document.createElement("div");
+      d.className = "stat";
+      const ok = (k === "verdict" && run.summary[k].toLowerCase() === "pass")
+              || (k === "overlaps" && run.summary[k] === "0");
+      d.innerHTML = `<div class="k">${stats[k]}</div><div class="v" style="color:${
+        ok ? "var(--ok)" : (k === "verdict" ? "var(--bad)" : "#fff")}">${esc(run.summary[k])}</div>`;
+      sum.appendChild(d);
+    }
+  }
+
+  // The animation is the run's showpiece: embed it on the page instead of
+  // hiding it behind a link. Lazy-loaded because a full run's GIF runs to
+  // tens of megabytes.
+  const anim = $("anim");
+  anim.innerHTML = "";
+  if (run.artifacts) {
+    const gif = run.artifacts.find((a) => a.rel.toLowerCase().endsWith(".gif"));
+    if (gif) {
+      anim.innerHTML =
+        `<div class="lbl">Animated placement &mdash; ${esc(gif.title)}</div>` +
+        `<img src="/runs/${run.id}/${gif.rel}" alt="animated placement run" loading="lazy">`;
+    }
+  }
+
+  const art = $("artifacts");
+  art.innerHTML = "";
+  if (run.artifacts && run.artifacts.length) {
+    const ul = document.createElement("ul");
+    for (const a of run.artifacts) {
+      const li = document.createElement("li");
+      li.innerHTML = `<a href="/runs/${run.id}/${a.rel}" target="_blank">${esc(a.title)}</a> ` +
+        `<span style="color:var(--muted)">${esc(a.note)}</span>`;
+      ul.appendChild(li);
+    }
+    art.appendChild(ul);
+  }
+}
+
+// ---------------------------------------------------------------- boot
+logEl.addEventListener("scroll", () => {
+  stick = logEl.scrollTop + logEl.clientHeight > logEl.scrollHeight - 60;
+});
+$("runbtn").onclick = submitRun;
+loadBenchmarks();
+refreshRuns();
+runsListTimer = setInterval(refreshRuns, 5000);
+</script>
+</body>
+</html>
