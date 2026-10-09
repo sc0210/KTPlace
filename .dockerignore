@@ -8,6 +8,7 @@ ktplace.csh
 *.log
 logs/
 .claude/
+.opencode/
 
 # History is not needed to build, and changes with every commit, which would
 # otherwise invalidate the cached build layer of the `ci` target each time.
