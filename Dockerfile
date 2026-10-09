@@ -15,13 +15,22 @@
 #          docker run -v "$PWD/output:/ktplace/output" ktplace \
 #              ktplace benchmark/ISPD_2005/adaptec1 -w output/adaptec1-linux
 #
-#   run    the same binary without the toolchain that built it -- the engine
-#          and the few libraries it links, nothing else -- so this is what to
-#          run placements from:
+#   runtime the base `run` and `web` are both made of: the four libraries the
+#          binary links, plus the vendored adaptec1. No toolchain, no engine --
+#          selecting it by hand has no point.
+#
+#   run    the runtime base with the engine on top, so this is what to run
+#          placements from:
 #
 #          docker build --target run -t ktplace-run .
 #          docker run --rm -v "$PWD/output:/ktplace/output" ktplace-run \
 #              benchmark/ISPD_2005/adaptec1 -w output/adaptec1
+#
+#   web    the runtime base with the console on top -- python3 and webui, and
+#          deliberately no engine: compose mounts the dev container's build
+#          volume at /ktplace/build, and the console runs the binary that tree
+#          compiled. One compile, shared by the shell and the browser. See
+#          compose.yaml and the README.
 #
 #   dev    a long-lived development container you SSH into, with the repository
 #          mounted live rather than copied. Start it with scripts/devenv.sh,
@@ -125,12 +134,17 @@ COPY . .
 
 RUN make -j"$(nproc)" && strip build/bin/ktplace
 
-# ------------------------------------------------------------------------ run
-# The binary and what it links, and nothing else: no compiler, no sources, no
-# objects. These four are the runtime packages behind the toolchain stage's
-# -dev packages, on the same Ubuntu the binary was built on, so what runs here
-# is exactly what was built -- a tenth of the ci image's size.
-FROM ubuntu:24.04 AS run
+# ------------------------------------------------------------------ runtime
+# What `run` and `web` are both made of, and the reason neither carries a
+# toolchain: these four are the runtime packages behind the toolchain stage's
+# -dev packages, on the same Ubuntu the binary was built on, so what runs on
+# them is exactly what was built -- a tenth of the ci image's size.
+#
+# The vendored adaptec1 (5 MB) goes in here rather than in `run`, because `web`
+# needs a design to offer the console as much as a one-shot run does, and taking
+# it from the build context rather than from `build` is what lets `web` skip the
+# compile entirely. Mount benchmark/ for any other suite.
+FROM ubuntu:24.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
@@ -141,30 +155,49 @@ RUN apt-get update \
         libfmt9 \
     && rm -rf /var/lib/apt/lists/*
 
+WORKDIR /ktplace
+COPY benchmark/ISPD_2005/adaptec1 benchmark/ISPD_2005/adaptec1
+
+# ------------------------------------------------------------------------ run
+# The engine on the runtime base: the binary and what it links, and nothing
+# else -- no compiler, no sources, no objects.
+#
 # The entrypoint rather than the command, so `docker run ktplace-run <args>`
 # passes <args> to ktplace instead of replacing it. The vendored design comes
-# along (5 MB), so the image runs a full placement with no mounts at all;
-# mount benchmark/ for any other suite.
-WORKDIR /ktplace
+# along, so the image runs a full placement with no mounts at all.
+FROM runtime AS run
+
 COPY --from=build /ktplace/build/bin/ktplace /usr/local/bin/ktplace
-COPY --from=build /ktplace/benchmark/ISPD_2005/adaptec1 benchmark/ISPD_2005/adaptec1
 ENTRYPOINT ["ktplace"]
 CMD ["--help"]
 
 # ---------------------------------------------------------------------- web
-# The run image plus the web console that drives it: ktplace on PATH, the
-# Python server (stdlib only, nothing to install beyond python3), and the
-# vendored adaptec1, so a browser on the host can start a placement, watch the
-# transcript stream, and open the gallery the engine itself writes.
+# The runtime base plus the console that drives it: ktplace's own directory
+# layout, the Python server (stdlib only, nothing to install beyond python3),
+# and the vendored adaptec1, so a browser on the host can start a placement,
+# watch the transcript stream, and open the gallery the engine itself writes.
+#
+#   docker compose up -d --build      # the usual way: the dev container and the
+#                                     # console together, engine included
 #
 #   docker build --target web -t ktplace-web .
 #   docker run --rm -p 127.0.0.1:8080:8080 \
-#       -v "$PWD/webui-runs:/ktplace/runs" ktplace-web
+#       -v ktplace_build:/ktplace/build -v ktplace_web-runs:/ktplace/runs \
+#       ktplace-web
+#                                     # the two volumes compose creates, so this
+#                                     # console runs the binary the dev
+#                                     # container compiled
+#
+# The engine is *not* in this image: compose mounts the dev container's build
+# volume at /ktplace/build, and the server runs that binary, so the console and
+# the shell share one compile instead of each having their own. With that volume
+# still empty the console serves anyway, and reports the engine as not built
+# yet until `make` has run.
 #
 # Runs are kept under /ktplace/runs; mount something there to keep them across
 # container restarts. Bind port to loopback only unless you want the console on
 # the network.
-FROM run AS web
+FROM runtime AS web
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 \
