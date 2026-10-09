@@ -515,6 +515,47 @@ BOOST_AUTO_TEST_CASE(a_fixed_view_draws_the_original_positions) {
     BOOST_TEST(contains(readAll(dir.file("f.svg")), "<svg"));
 }
 
+BOOST_AUTO_TEST_CASE(movable_cells_are_written_once_each_in_vertex_order) {
+    // The movable-cell lines are formatted in parallel chunks of 4096 vertices,
+    // so a design several chunks long checks that the chunks are stitched back
+    // in order and that none is dropped or written twice at a boundary. Cell i
+    // sits at x = i in world units, so the order of the x values is the order of
+    // the cells in the file.
+    const ScratchDir dir("svgorder");
+    Graph g = sampleGraph();
+    constexpr std::size_t kCells = 10000;
+    const std::size_t first = g.getNumVertices();
+    for (std::size_t i = 0; i < kCells; ++i) {
+        Vertex &v = g.getVertex(g.addVertex(VertexType::Cell, "o" + std::to_string(i)));
+        v.width = 1.0;
+        v.height = 1.0;
+    }
+    std::vector<float> x = sampleX(g), y = sampleY(g);
+    for (std::size_t i = 0; i < kCells; ++i) {
+        x[first + i] = static_cast<float>(i);
+        y[first + i] = 50.0F;
+    }
+    const BBox die{0.0, 0.0, 20000.0, 100.0};
+    const std::string path = dir.file("o.svg").string();
+    writeFrameSvg(path, g, x, y, die, 0, 1, 0.0, 0.0, 0.0, "", nullptr, true, /*worldUnits=*/true);
+
+    const std::string svg = readAll(dir.file("o.svg"));
+    const std::size_t open = svg.find("<g fill=\"#4fc3f7\"");
+    BOOST_REQUIRE(open != std::string::npos);
+    const std::size_t close = svg.find("</g>", open);
+    BOOST_REQUIRE(close != std::string::npos);
+    std::vector<double> xs;
+    for (std::size_t at = svg.find("<rect x=\"", open); at < close;
+         at = svg.find("<rect x=\"", at + 1)) {
+        xs.push_back(std::stod(svg.substr(at + 9)));
+    }
+    // sampleGraph's three movable cells come first, then the kCells added here.
+    BOOST_REQUIRE_EQUAL(xs.size(), kCells + 3);
+    for (std::size_t i = 0; i < kCells; ++i) {
+        BOOST_REQUIRE_EQUAL(xs[3 + i], static_cast<double>(i));
+    }
+}
+
 BOOST_AUTO_TEST_CASE(a_raster_frame_is_a_binary_ppm_that_reads_back) {
     const ScratchDir dir("ppm");
     const Graph g = sampleGraph();
