@@ -31,8 +31,7 @@ run_one() {
 
   KTPLACE_ANIM=1 KTPLACE_ANIM_MAX_FRAMES=1200 KTPLACE_ANIM_BLEND=2 \
   KTPLACE_SIMPL_TRACE_EVERY=1 KTPLACE_SIMPL_CG_EVERY=8 \
-    ./build/bin/ktplace "$name" "$d" "$name.pl" -a simpl -p plots \
-    -w "output/$name" -l ktplace.log > "$LOGDIR/$name.log" 2>&1
+    ./build/bin/ktplace "$d" -a simpl -w "output/$name" > "$LOGDIR/$name.log" 2>&1
   local rc=$?
 
   # The stills are deleted once the GIF is written, so the frame count is read
