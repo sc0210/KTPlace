@@ -126,7 +126,7 @@ root. Source the one for your shell and the engine is callable by name:
 ```sh
 source ktplace.sh     # bash / sh
 source ktplace.csh    # csh / tcsh
-ktplace ibm01 ./benchmark/ICCAD04/ibm01 ./output/ibm01.pl
+ktplace benchmark/ISPD_2005/adaptec1 -w output/adaptec1
 ```
 
 They only appear when the link succeeds, are safe to source repeatedly, and
@@ -190,19 +190,21 @@ clang-format -i src/**/*.cc src/**/*.h
 All output goes through a single logger (`src/util/kt_log.h`) to a transcript
 file plus stderr; **stdout is never written to**, so redirecting it stays clean.
 
+Both log files are written into the work directory:
+
 ```sh
-./build/bin/ktplace ibm01 ./benchmark/ICCAD04/ibm01 ./output/ibm01.pl -l run.log
-./build/bin/ktplace ibm01 ./benchmark/ICCAD04/ibm01 ./output/ibm01.pl -v   # + trace
+ktplace benchmark/ISPD_2005/adaptec1 -w output/adaptec1      # ktplace.log + ktplace_trace.log
+ktplace benchmark/ISPD_2005/adaptec1 -w output/adaptec1 -v   # trace also on stderr
 ```
 
-| call | `ktplace.log` | `<log>_trace.log` | stderr |
+| call | `ktplace.log` | `ktplace_trace.log` | stderr |
 |------|:--------------:|:-----------------:|:------:|
 | `ktlog.echo(...)`  | yes | no | yes |
-| `ktlog.trace(...)` | no  | yes (only with `-v`) | no |
+| `ktlog.trace(...)` | no  | yes | only with `-v` |
 | `ktlog.fatal(...)` | yes | no | yes, then `exit(1)` |
 
-Trace records go to a **separate** file so the main transcript stays readable,
-and that file is not created at all without `-v`. Messages are built with
+Trace records go to a **separate** file so the main transcript stays readable;
+`-v` additionally echoes them to the console. Messages are built with
 `fmt::format` and checked at compile time.
 
 `ktReportTable` (`src/util/kt_reportTable.h`) accumulates cells and renders an
@@ -294,9 +296,9 @@ and the mechanism for it has not been identified here.
 
 ## Placement images
 
-A run with `-p plots` writes, per stage, SVG frames (vector, so they stay sharp
-at any zoom) and a per-iteration HPWL/overflow curve, and — if `KTPLACE_ANIM` is
-set — an animated GIF assembled from those frames. On top of that, every run
+Every run writes, under `<work-dir>/plots`, per-stage SVG frames (vector, so
+they stay sharp at any zoom), a per-iteration HPWL curve, and — unless
+`KTPLACE_ANIM=0` — an animated GIF assembled from those frames. On top of that, every run
 writes one high-resolution still of the *finished* placement to
 `plots/final/final.png`: 6144x6144 by default, which on an ISPD 2005 design is
 about fourteen pixels across for a standard cell. The animation frames are
@@ -371,46 +373,54 @@ See [benchmark/README.md](benchmark/README.md) for details.
 ## Usage
 
 ```sh
-./build/bin/ktplace <name> <input_dir> <output.pl> [options]
-./build/bin/ktplace ibm01 ./benchmark/ICCAD04/ibm01 ./output/ibm01.pl
+ktplace <input_dir> [options]
+ktplace benchmark/ISPD_2005/adaptec1 -w output/adaptec1
 ```
 
-The input format is auto-detected: a directory containing a `.def`/`.def.gz`
+`<input_dir>` holds one design whose files are named after it -- for adaptec1,
+`adaptec1.aux`, `adaptec1.nodes`, `adaptec1.nets` and so on, optionally
+gzipped. The format is auto-detected: a directory containing a `.def`/`.def.gz`
 goes through the LEF/DEF adapter, everything else is loaded as Bookshelf.
 
 | option | meaning |
 | --- | --- |
-| `-a, --algorithm <name>` | placement algorithm (default `quadratic`) |
-| `-f, --format <fmt>` | output format (default `bookshelf`) |
-| `-l, --log <file>` | transcript log (default `ktplace.log`) |
-| `-v, --verbose` | also write `<log>_trace.log` |
-| `-p, --plot <dir>` | SVG frames + HPWL curve + HTML gallery |
-| `-w, --work-dir <dir>` | base for relative output/plot/log paths |
-| `-c, --config <file>` | configuration file |
+| `-a, --algorithm <name>` | `simpl` (default) or `ntuplace1` |
+| `-w, --work-dir <dir>` | where to write everything; created if missing (default: current directory) |
+| `-v, --verbose` | also echo trace records to the console |
 | `-h, --help` / `-V, --version` | help / version |
 
-With `-w`, relative `output_path` and plot directories are resolved under that
-directory (absolute paths are used verbatim), the logs default to
-`<work-dir>/ktplace.log` and `<work-dir>/ktplace_trace.log`, and the directory
-is created if missing. Without it, behaviour is unchanged and logs land in the
-current directory.
+Everything a run writes goes under the work directory:
+
+| path | contents |
+| --- | --- |
+| `placed.pl` | the placement, Bookshelf `.pl`, one line per cell |
+| `ktplace.log` | the transcript (also on stderr) |
+| `ktplace_trace.log` | per-iteration diagnostics |
+| `plots/` | images of the run; see below |
+
+stdout is never written to. Behaviour is tuned with `KTPLACE_*` environment
+variables rather than flags; the ones that matter most are listed under
+*Placement images*.
 
 ### Visualizing the solve
 
-Pass `-p <dir>` (or `--plot`) to emit SVG snapshots of the placement at each
-outer iteration, an HPWL/overflow curve (`hpwl.csv` + `hpwl.svg`), and an HTML
-gallery; open `<dir>/index.html` in a browser.
+Open `<work-dir>/plots/index.html` in a browser: it is a gallery of the run.
+Behind it:
 
-```sh
-./build/bin/ktplace ibm01 ./benchmark/ICCAD04/ibm01 ./output/ibm01.pl -p ./output/plots
-```
+| path | contents |
+| --- | --- |
+| `plots/simpl/` | global placement: a frame per CG iterate (`simpl_cg_*`), the lower and upper bound per iteration (`simpl_LSS_*`, `simpl_LAL_*`), and density maps |
+| `plots/simpl_bounds.csv`, `.svg` | HPWL of the lower and upper bound per iteration, and their gap |
+| `plots/legalize/`, `plots/detailplace/` | legalization and detailed placement frames |
+| `plots/final/` | the finished placement, `final.png` (6144x6144) and `final.svg` |
+| `plots/anim/placement.gif` | the whole run animated |
 
-Frames are decimated above 150k cells, so even million-cell designs render fast.
-Plotting evaluates HPWL after every recorded iteration, which adds a netlist
-pass per frame (visible in the solve time).
+Every frame draws every cell; nothing is decimated. On a large design that makes
+the frames a large share of the run -- adaptec1 writes about 1.2 GB of them --
+so see *Placement images* for turning them off.
 
-The yellow dashed curve (and the `overflow` column of `hpwl.csv`) reports the
-**density overflow**: the fraction of movable-cell area sitting in bins that
+The run's report gives the **scaled overflow** of the lower bound and of the
+final placement: the fraction of movable-cell area sitting in bins that
 exceed a full 64x-bin capacity. 0.0 means the die is uniformly covered; 1.0
 means everything is stacked in a single bin. `ktplace` spreads cells with a
 SimPL-style projection: a gated equi-area fill drains over-packed bins into
