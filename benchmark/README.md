@@ -73,20 +73,14 @@ which the Bookshelf reader accepts transparently.
 ## Running
 
 ```sh
-./build/bin/ktplace mgc_des_perf_a ./benchmark/ISPD_2015/mgc_des_perf_a \
-    ./output/mgc_des_perf_a.pl
-./build/bin/ktplace ibm01 ./benchmark/ICCAD04/ibm01 ./output/ibm01.pl
+./build/bin/ktplace ./benchmark/ISPD_2015/mgc_des_perf_a -w ./output/mgc_des_perf_a
+./build/bin/ktplace ./benchmark/ICCAD04/ibm01 -w ./output/ibm01
 ```
 
 The input format is auto-detected: a directory containing a `.def`/`.def.gz`
-is read as LEF/DEF, anything else as Bookshelf.
-
-Add `-p <dir>` to write SVG frames of the solve plus an HTML gallery:
-
-```sh
-./build/bin/ktplace mgc_des_perf_a ./benchmark/ISPD_2015/mgc_des_perf_a \
-    ./output/mgc_des_perf_a.pl -p ./output/plots
-```
+is read as LEF/DEF, anything else as Bookshelf. The placement is written to
+`<work-dir>/placed.pl`, and SVG frames of the solve plus an HTML gallery to
+`<work-dir>/plots/` (open `plots/index.html`).
 
 ## File formats
 

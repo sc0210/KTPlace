@@ -148,7 +148,7 @@ src/
   datamodel/           # PlacementDB, Graph, Vertex, Edge
   adaptor/             # Bookshelf and LEF/DEF readers
   placer/              # quadratic placer (clique/star, CG, density)
-  visualization/       # SVG frames, HPWL curve, HTML gallery
+  visualization/       # SVG frames, bounds curve, HTML gallery, GIF
   util/                # kt_log, kt_reportTable, kt_scopedTimer
 ```
 
@@ -314,7 +314,7 @@ CImg, and the result is reproducible from `ktplace` alone.
 
 | variable | effect |
 |----------|--------|
-| `KTPLACE_ANIM` | enable the animation |
+| `KTPLACE_ANIM` | `0` turns the animation off (on by default) |
 | `KTPLACE_ANIM_MAX_FRAMES` | frame budget for the whole run (default 1200) |
 | `KTPLACE_ANIM_ZOOM` | animation frame scale, vs 768x768 (default 3, so 2304x2304) |
 | `KTPLACE_ANIM_BLEND` | in-between frames per placement (default 3) |
@@ -420,7 +420,7 @@ in a corner.
 - Quadratic placement: clique/star-hybrid net model, CSR matrix, Jacobi-preconditioned CG, all parallelized with oneTBB
 - Bookshelf `.pl` output writer
 - Density-aware global placement: 64x64 occupancy grid over the die, SimPL-style projection spreading (gated equi-area drain) followed by optional wirelength refinement
-- Iteration-by-iteration placement visualization (SVG frames, HPWL/overflow curve, gallery) — all generated in C++, no image libraries
+- Iteration-by-iteration placement visualization on every run (SVG frames, lower/upper-bound HPWL curve, HTML gallery, animated GIF) — all generated in C++; see *Placement images*
 
 ## Timing
 
