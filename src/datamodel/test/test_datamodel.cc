@@ -31,9 +31,9 @@ BOOST_AUTO_TEST_CASE(adds_cells_and_terminals) {
     BOOST_TEST(db.getNumCells() == 0);
     BOOST_TEST(db.getNumTerminals() == 0);
 
-    db.addCell("c0", 1.0, 2.0);
-    db.addCell("c1", 1.0, 2.0);
-    db.addCell("pad0", 1.0, 2.0, /*isTerminal=*/true);
+    (void)db.addCell("c0", 1.0, 2.0);
+    (void)db.addCell("c1", 1.0, 2.0);
+    (void)db.addCell("pad0", 1.0, 2.0, /*isTerminal=*/true);
 
     BOOST_TEST(db.getNumCells() == 3);
     BOOST_TEST(db.getNumTerminals() == 1);
@@ -56,12 +56,12 @@ BOOST_AUTO_TEST_CASE(reports_geometry_of_a_cell) {
 BOOST_AUTO_TEST_CASE(rejects_unknown_cell) {
     PlacementDB db;
     // The database reports lookup failures as std::runtime_error.
-    BOOST_CHECK_THROW(db.getCellId("missing"), std::runtime_error);
+    BOOST_CHECK_THROW((void)db.getCellId("missing"), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(tracks_positions_and_fixed_flag) {
     PlacementDB db;
-    db.addCell("c0", 1.0, 1.0);
+    (void)db.addCell("c0", 1.0, 1.0);
     db.setCellPosition("c0", 12.0, 34.0);
     const auto [x, y] = db.getCellPosition("c0");
     BOOST_TEST(x == 12.0);
@@ -80,11 +80,11 @@ BOOST_AUTO_TEST_SUITE(PlacementDB_nets)
 
 BOOST_AUTO_TEST_CASE(two_pin_net_creates_two_edges) {
     PlacementDB db;
-    db.addCell("c0", 1.0, 1.0);
-    db.addCell("c1", 1.0, 1.0);
-    db.addNet("n0");
-    db.addPin("c0", "n0", 0.0, 0.0, true);
-    db.addPin("c1", "n0", 0.0, 0.0, false);
+    (void)db.addCell("c0", 1.0, 1.0);
+    (void)db.addCell("c1", 1.0, 1.0);
+    (void)db.addNet("n0");
+    (void)db.addPin("c0", "n0", 0.0, 0.0, true);
+    (void)db.addPin("c1", "n0", 0.0, 0.0, false);
 
     BOOST_TEST(db.getNumNets() == 1);
     BOOST_TEST(db.getNumPins() == 2);
@@ -94,8 +94,8 @@ BOOST_AUTO_TEST_CASE(two_pin_net_creates_two_edges) {
 
 BOOST_AUTO_TEST_CASE(net_and_cell_pin_lists_are_consistent) {
     PlacementDB db;
-    db.addCell("c0", 1.0, 1.0);
-    db.addNet("n0");
+    (void)db.addCell("c0", 1.0, 1.0);
+    (void)db.addNet("n0");
     const std::size_t pin = db.addPin("c0", "n0", 0.0, 0.0, true);
     BOOST_TEST(db.getCellPins(db.getCellId("c0")).size() == 1);
     BOOST_TEST(db.getNetPins(db.getNetId("n0")).front() == pin);
@@ -103,10 +103,10 @@ BOOST_AUTO_TEST_CASE(net_and_cell_pin_lists_are_consistent) {
 
 BOOST_AUTO_TEST_CASE(rejects_pins_on_unknown_vertices) {
     PlacementDB db;
-    db.addCell("c0", 1.0, 1.0);
-    db.addNet("n0");
-    BOOST_CHECK_THROW(db.addPin("ghost", "n0", 0.0, 0.0, true), std::runtime_error);
-    BOOST_CHECK_THROW(db.addPin("c0", "ghost", 0.0, 0.0, true), std::runtime_error);
+    (void)db.addCell("c0", 1.0, 1.0);
+    (void)db.addNet("n0");
+    BOOST_CHECK_THROW((void)db.addPin("ghost", "n0", 0.0, 0.0, true), std::runtime_error);
+    BOOST_CHECK_THROW((void)db.addPin("c0", "ghost", 0.0, 0.0, true), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -120,8 +120,8 @@ BOOST_AUTO_TEST_CASE(counts_rows) {
     // sites come from addSubrow, because a row with no subrow is not placeable.
     const std::size_t r0 = db.addRow(0.0, 10.0, 1.0, 1.0);
     const std::size_t r1 = db.addRow(10.0, 10.0, 1.0, 1.0);
-    db.addSubrow(r0, 0.0, 100.0);
-    db.addSubrow(r1, 0.0, 100.0);
+    (void)db.addSubrow(r0, 0.0, 100.0);
+    (void)db.addSubrow(r1, 0.0, 100.0);
     BOOST_TEST(db.getNumRows() == 2);
 
     // The row geometry the legalizer and detailed placer depend on.
@@ -186,11 +186,11 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_CASE(PlacementDB_clear_resets_everything) {
     PlacementDB db;
-    db.addCell("c0", 1.0, 1.0);
-    db.addNet("n0");
-    db.addPin("c0", "n0", 0.0, 0.0, true);
+    (void)db.addCell("c0", 1.0, 1.0);
+    (void)db.addNet("n0");
+    (void)db.addPin("c0", "n0", 0.0, 0.0, true);
     const std::size_t row = db.addRow(0.0, 1.0, 1.0, 1.0);
-    db.addSubrow(row, 0.0, 10.0);
+    (void)db.addSubrow(row, 0.0, 10.0);
 
     db.clear();
 

@@ -727,9 +727,10 @@ BOOST_AUTO_TEST_CASE(a_legal_row_is_drawn_at_its_true_size_and_not_wider) {
     const double scale = avail / (1.02 * 400.0);
     const double expected = kCells * kW * scale;
     const double drawn = static_cast<double>(lastX - firstX + 1);
-    BOOST_TEST_CONTEXT("expected " << expected << " px, drawn " << drawn);
-    BOOST_TEST(drawn <= expected + 3.0);
-    BOOST_TEST(drawn >= expected - 5.0);
+    BOOST_TEST_CONTEXT("expected " << expected << " px, drawn " << drawn) {
+        BOOST_TEST(drawn <= expected + 3.0);
+        BOOST_TEST(drawn >= expected - 5.0);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(the_rows_are_drawn_when_there_are_rows) {

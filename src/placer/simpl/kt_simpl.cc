@@ -1354,9 +1354,9 @@ void SimplePlacer::Impl::nonlinearScale(const std::vector<std::uint32_t> &cells,
             }
             return sa;
         };
-        const double regionAvail = availIn(a0, a1);
-        if (regionAvail > 0.0) {
-            const double thresh = regionAvail / 10.0;
+        const double availHere = availIn(a0, a1);
+        if (availHere > 0.0) {
+            const double thresh = availHere / 10.0;
             bool grew = true;
             std::size_t guard = 0;
             while (grew && guard++ < 24) {

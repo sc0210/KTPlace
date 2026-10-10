@@ -163,7 +163,7 @@ void RatioPlacer::Impl::build() {
     }
 }
 
-double RatioPlacer::Impl::rowAreaIn(double x0, double y0, double x1, double y1) const {
+double RatioPlacer::Impl::rowAreaIn(double x0, double /*y0*/, double x1, double /*y1*/) const {
     double a = 0.0;
     for (const PlacementDB::RowInfo &r : rows_) {
         const double lo = std::max(x0, r.xlo());
@@ -264,7 +264,7 @@ double RatioPlacer::Impl::netWeight(const HyperNet &n, double p1, double p2,
     return std::max(cut, params_.minNetWeight);
 }
 
-bool RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cells, bool vertical,
+bool RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cells, bool /*vertical*/,
                                     double cutCoord, double maxImbalance,
                                     std::vector<std::uint8_t> &side) {
     const std::size_t n = cells.size();
@@ -448,7 +448,7 @@ bool RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cells, boo
     return true;
 }
 
-void RatioPlacer::Impl::writeFrame(const RatioRegion &r, std::size_t depth,
+void RatioPlacer::Impl::writeFrame(const RatioRegion &/*r*/, std::size_t depth,
                                    const char *note) const {
     if (params_.plotDir.empty()) {
         return;
@@ -490,14 +490,15 @@ void RatioPlacer::Impl::divide(RatioRegion r) {
     const double h = r.y1 - r.y0;
     const bool vertical = (w >= h);
 
-    const double totalArea = movableArea(r.cells);
+    // The sub-regions spread to fill the region's rows and whitespace, so their
+    // areas are only compared against each other and against the region's area
+    // through the imbalance cap; the region's own area is not needed below.
     const double regionArea = w * h;
-    const double regionRows = rowAreaIn(r.x0, r.y0, r.x1, r.y1);
     (void)regionArea;
 
     std::vector<std::uint8_t> side;
     RatioRegion r0 = r, r1 = r;
-    double p1 = 0.0, p2 = 0.0, cut = 0.0;
+    double cut = 0.0;
     bool accepted = false;
 
     for (std::size_t attempt = 0; attempt <= params_.maxRatioRetries && !accepted; ++attempt) {
@@ -506,19 +507,12 @@ void RatioPlacer::Impl::divide(RatioRegion r) {
         // Starting from even and widening is the paper's "move the cut-line
         // toward the partition with a smaller utilization ratio", expressed as a
         // cap on the area ratio rather than as a cut position.
-        const double denom = std::max(totalArea, 1e-300);
-        const double slack =
-            (regionRows > 0.0) ? std::max(0.0, (regionRows - totalArea) / denom) : 0.0;
         double cap = attempt * 0.25;  // 0 = perfectly balanced, widening per retry
 
         if (vertical) {
             cut = r.x0 + 0.5 * w;
-            p1 = r.x0 + 0.25 * w;
-            p2 = r.x0 + 0.75 * w;
         } else {
             cut = r.y0 + 0.5 * h;
-            p1 = r.y0 + 0.25 * h;
-            p2 = r.y0 + 0.75 * h;
         }
         if (!bipartition(r.cells, vertical, cut, cap, side)) {
             continue;
