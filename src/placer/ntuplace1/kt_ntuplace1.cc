@@ -87,7 +87,8 @@ private:
     // For each movable, the nets it is on, so a gain update does not rescan the
     // whole netlist.
     std::vector<std::vector<std::uint32_t>> cellNets_;
-    std::vector<AreaRect> rowRects_;    // one per subrow
+    std::vector<AreaRect> rowRects_;    // one per subrow, sorted by y
+    double maxRowH_ = 0.0;
     std::vector<AreaRect> fixedRects_;  // fixed blocks, terminals included
     // Where cells may go: the bounding box of the rows. Not the die box, which also
     // spans pads and macros outside the rows -- a region out there has no capacity
@@ -141,6 +142,9 @@ void RatioPlacer::Impl::build() {
 
     nets_.clear();
     cellNets_.assign(mov_.size(), {});
+    // A block with two pins on one net is still one block of that net; counted
+    // twice, its side count never drops to 1 and FM never sees it un-cut the net.
+    std::vector<std::size_t> lastNet(mov_.size(), std::numeric_limits<std::size_t>::max());
     for (std::size_t v = 0; v < nv; ++v) {
         const Vertex &vert = graph_.getVertex(v);
         if (vert.type != VertexType::Net) {
@@ -154,7 +158,11 @@ void RatioPlacer::Impl::build() {
                 continue;
             }
             if (indexOf[e.source] != kNoIndex) {
-                n.cells.push_back(indexOf[e.source]);
+                const std::uint32_t c = indexOf[e.source];
+                if (lastNet[c] != v) {
+                    lastNet[c] = v;
+                    n.cells.push_back(c);
+                }
                 continue;
             }
             // Bookshelf pin offsets are from the cell's centre.
@@ -209,6 +217,14 @@ void RatioPlacer::Impl::build() {
     if (rowRects_.empty()) {
         box_ = placementDieBox(db_);  // no rows: the die is all there is
     }
+    // Sorted by y so freeAreaIn only visits the rows a region spans, not all of
+    // them on every cut.
+    std::sort(rowRects_.begin(), rowRects_.end(),
+              [](const AreaRect &a, const AreaRect &b) { return a.y0 < b.y0; });
+    maxRowH_ = 0.0;
+    for (const AreaRect &r : rowRects_) {
+        maxRowH_ = std::max(maxRowH_, r.y1 - r.y0);
+    }
     posX_.assign(mov_.size(), 0.5 * (box_[0] + box_[2]));
     posY_.assign(mov_.size(), 0.5 * (box_[1] + box_[3]));
 }
@@ -218,8 +234,10 @@ double RatioPlacer::Impl::freeAreaIn(double x0, double y0, double x1, double y1)
         return std::max(0.0, (x1 - x0) * (y1 - y0));
     }
     double rows = 0.0;
-    for (const AreaRect &r : rowRects_) {
-        rows += overlap(r, x0, y0, x1, y1);
+    auto it = std::lower_bound(rowRects_.begin(), rowRects_.end(), y0 - maxRowH_,
+                               [](const AreaRect &r, double y) { return r.y0 < y; });
+    for (; it != rowRects_.end() && it->y0 < y1; ++it) {
+        rows += overlap(*it, x0, y0, x1, y1);
     }
     // Fixed blocks only take capacity where they sit on rows; the rows are a solid
     // band in every benchmark here, so clipping to the rows' bounding box is what
@@ -287,10 +305,7 @@ std::size_t RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cel
 
     // Initial partition: fill side 0 up to the target in netlist order. FM's
     // passes are what make it a min-cut; this only has to be balanced.
-    double a0 = 0.0, total = 0.0;
-    for (std::uint32_t i = 0; i < n; ++i) {
-        total += area_[cells[i]];
-    }
+    double a0 = 0.0;
     for (std::uint32_t i = 0; i < n; ++i) {
         if (a0 + 0.5 * area_[cells[i]] <= target) {
             a0 += area_[cells[i]];
@@ -345,7 +360,6 @@ std::size_t RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cel
         int cum = 0, bestCum = 0;
         std::size_t bestLen = 0;
         double bestDev = dev(a0);
-        const double startA0 = a0;
         double cur = a0;
         while (true) {
             // The best unlocked block on each side; stale heap entries (locked, or
@@ -427,7 +441,6 @@ std::size_t RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cel
             side[i] = 1 - side[i];
         }
         a0 = cur;
-        (void)startA0;
         if (bestLen == 0) {
             break;  // no improving prefix: a further pass would find the same
         }
@@ -449,7 +462,6 @@ std::size_t RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cel
             ++cutNets;
         }
     }
-    (void)total;
     return cutNets;
 }
 
@@ -522,12 +534,16 @@ void RatioPlacer::Impl::divide(RatioRegion r) {
     const bool vertical = (w >= h);
     const double cut = vertical ? r.x0 + 0.5 * w : r.y0 + 0.5 * h;
 
-    RatioRegion r0 = r, r1 = r;
+    // Geometry only: the cells are dealt out after the partition, so copying the
+    // parent's list into both children first would be wasted work at every level.
+    RatioRegion r0, r1;
+    r0.x0 = r1.x0 = r.x0;
+    r0.y0 = r1.y0 = r.y0;
+    r0.x1 = r1.x1 = r.x1;
+    r0.y1 = r1.y1 = r.y1;
     r0.depth = r1.depth = r.depth + 1;
     (vertical ? r0.x1 : r0.y1) = cut;
     (vertical ? r1.x0 : r1.y0) = cut;
-    r0.cells.clear();
-    r1.cells.clear();
 
     const double free0 = freeAreaIn(r0.x0, r0.y0, r0.x1, r0.y1);
     const double free1 = freeAreaIn(r1.x0, r1.y0, r1.x1, r1.y1);
