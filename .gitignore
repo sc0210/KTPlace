@@ -60,6 +60,9 @@ benchmark/ICCAD04/*
 # Editor / OS noise
 *.swp
 .DS_Store
+.claude
+.opencode
+logs/
 
 # Local editor tooling (kept out of the repo)
 .cursorrules

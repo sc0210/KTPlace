@@ -74,6 +74,23 @@ docker run -v "$PWD/output:/ktplace/output" ktplace \
     ktplace benchmark/ISPD_2005/adaptec1 -w output/adaptec1
 ```
 
+**Lightweight run image.** The `ci` image above carries the toolchain, sources
+and objects -- 1.2 GB -- because it must be able to build and test. To only
+*run* placements, the `run` target packages the same binary with the four
+libraries it links and nothing else (~112 MB):
+
+```sh
+docker build --target run -t ktplace-run .
+docker run --rm -v "$PWD/output:/ktplace/output" ktplace-run \
+    benchmark/ISPD_2005/adaptec1 -w output/adaptec1
+```
+
+`ktplace` is the image's entrypoint, so everything after the image name goes
+to it: add `-p plots` for the visualization, `-v .../benchmark:/ktplace/benchmark:ro`
+to mount other suites. The vendored adaptec1 is already inside, so this runs
+a full placement with no mounts at all. Like the `ci` build it runs on the
+host's own architecture -- arm64 on Apple Silicon, x86-64 otherwise.
+
 A successful build also writes two environment helpers into the repository
 root. Source the one for your shell and the engine is callable by name:
 
