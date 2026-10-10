@@ -33,7 +33,6 @@ Endpoints
 from __future__ import annotations
 
 import datetime
-import io
 import json
 import os
 import pathlib
@@ -43,6 +42,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -69,6 +69,25 @@ RUN_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{8}$")
 ALLOW_EXEC = os.environ.get("KTPLACE_WEB_ALLOW_EXEC", "").lower() not in ("", "0", "false", "no")
 EXEC_ROOT = pathlib.Path(os.environ.get("KTPLACE_EXEC_ROOT", str(HOME / "exec"))).resolve()
 MAX_EXECS = max(1, int(os.environ.get("KTPLACE_WEB_MAX_EXECS", "12")))
+# A command that floods its output or never ends is stopped rather than left to
+# fill the disk: the page is for one-shot commands, not services.
+EXEC_MAX_BYTES = max(1 << 20, int(os.environ.get("KTPLACE_WEB_EXEC_MAX_BYTES", str(64 << 20))))
+EXEC_TIMEOUT = max(1.0, float(os.environ.get("KTPLACE_WEB_EXEC_TIMEOUT", "3600")))
+
+# The most one poll returns of a log, trace or command output. A first poll at
+# offset 0 of a finished verbose run would otherwise ship the whole trace file in
+# one JSON response; the page keeps paging from the offset it is handed.
+READ_CHUNK = 1 << 20
+
+# Host names the console answers to. Binding to loopback does not stop a page on
+# another site from reaching it -- a "simple" cross-origin POST needs no
+# preflight, and DNS rebinding makes the attacker's name resolve to 127.0.0.1 --
+# so every request's Host must be one of these, and a state-changing request
+# must also come from one of them (Origin) with a JSON content type, which a
+# cross-origin page cannot send without a preflight this server never grants.
+ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1", "ktplace-web"} | {
+    h.strip().lower() for h in os.environ.get("KTPLACE_WEB_ALLOWED_HOSTS", "").split(",")
+    if h.strip()}
 
 # The engine reads its tuning from the environment (kt_option/flowMgr take no
 # flags for it), so an override is a KEY=VALUE pair rather than an argument. The
@@ -144,11 +163,16 @@ def scan_progress(run: "Run") -> None:
     try:
         with open(path, "rb") as fh:
             fh.seek(run.scan)
-            text = fh.read().decode("utf-8", "replace")
+            data = fh.read(size - run.scan)
     except OSError:
         return
-    run.scan = size
-    low = text.lower()
+    # Only whole lines: a marker the engine is still flushing is left for the
+    # next call rather than split across two reads where neither matches it.
+    cut = data.rfind(b"\n")
+    if cut < 0:
+        return
+    run.scan += cut + 1
+    low = data[:cut + 1].decode("utf-8", "replace").lower()
     for needle, fraction, stage, label in _PROGRESS_MARKERS:
         if needle in low and fraction > run.progress["fraction"]:
             run.progress = {"fraction": fraction, "stage": stage, "label": label,
@@ -318,7 +342,10 @@ def _cgroup_memory() -> tuple[int | None, int | None]:
             text = pathlib.Path("/sys/fs/cgroup", name).read_text().strip()
         except OSError:
             return None
-        return None if text in ("", "max") else int(text)
+        try:
+            return None if text in ("", "max") else int(text)
+        except ValueError:
+            return None
     current = read("memory.current")
     return read("memory.max"), current
 
@@ -426,13 +453,14 @@ def launch(benchmark: str, target: str, algorithm: str, verbose: bool,
     rid = new_id()
     work = RUN_ROOT / rid
     work.mkdir(parents=True, exist_ok=True)
+    # cmd lives in meta, not only in the file, so a later rewrite of
+    # request.json (a rename) carries it along.
     meta = {"benchmark": benchmark, "algorithm": algorithm, "verbose": verbose,
-            "env": env, "started": time.time()}
-    try:
-        (work / "request.json").write_text(
-            json_dumps({**meta, "id": rid, "cmd": " ".join(
+            "env": env, "started": time.time(), "cmd": " ".join(
                 [binary, benchmark, "-a", algorithm, "-w", str(work)]
-                + (["-v"] if verbose else []))}))
+                + (["-v"] if verbose else []))}
+    try:
+        (work / "request.json").write_text(json_dumps({**meta, "id": rid}))
     except OSError:
         pass
     args = [binary, target, "-a", algorithm, "-w", str(work)]
@@ -522,17 +550,8 @@ def read_log(run: Run, offset: int, stream: str = "log") -> tuple[str, int, bool
     """
     if stream not in _TRANSCRIPTS:
         stream = "log"
-    if offset < 0:
-        offset = 0
-    data = b""
-    path = run.work / _TRANSCRIPTS[stream]
-    try:
-        with open(path, "rb") as fh:
-            fh.seek(offset)
-            data = fh.read()
-    except OSError:
-        data = b""
-    return data.decode("utf-8", "replace"), offset + len(data), run.status != "running"
+    finished = run.status != "running"
+    return read_chunk(run.work / _TRANSCRIPTS[stream], offset, finished)
 
 
 # ------------------------------------------------------------- benchmarks
@@ -587,6 +606,9 @@ def summary(run: Run) -> dict:
     """
     if run._summary is not None:
         return run._summary
+    # Sampled before the read: a run that finishes while the transcript is being
+    # read must not cache a summary missing the lines it wrote at the end.
+    finished = run.status != "running"
     log = run.work / "ktplace.log"
     if not log.is_file():
         return {}
@@ -617,7 +639,7 @@ def summary(run: Run) -> dict:
                   and not f.startswith("[")]
         if len(fields) >= 2:
             result[key] = fields[-1]
-    if run.status != "running":
+    if finished:
         run._summary = result
     return result
 
@@ -634,7 +656,7 @@ def stop_run(run: Run) -> None:
 def delete_run(run: Run) -> None:
     """Stop the run if it is live, then remove what it wrote."""
     stop_run(run)
-    if run.proc is not None and run.status == "running":
+    if run.proc is not None and run.proc.poll() is None:
         try:
             run.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -642,6 +664,10 @@ def delete_run(run: Run) -> None:
                 run.proc.kill()
             except OSError:
                 pass
+            # Gone for certain before the run leaves _RUNS: otherwise it still
+            # holds a MAX_RUNS slot nobody can see, and can recreate files in
+            # the directory removed below.
+            run.proc.wait()
     with _RUNS_LOCK:
         _RUNS.pop(run.id, None)
     try:
@@ -650,13 +676,14 @@ def delete_run(run: Run) -> None:
         pass
 
 
-def export_zip(run: Run) -> bytes:
-    """Everything textual the run wrote, plus the final image, as one archive.
+def export_zip(run: Run, buf) -> None:
+    """Everything textual the run wrote, plus the final image, as one archive
+    written into `buf` -- a temporary file, so a large trace log is never held
+    in memory.
 
     Deliberately not the frame gallery: a full run's SVG frames run to hundreds
     of megabytes, and the gallery is served from the run directory anyway.
     """
-    buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for name, path in (
             ("ktplace.log", run.work / "ktplace.log"),
@@ -673,7 +700,6 @@ def export_zip(run: Run) -> bytes:
             "elapsed": round(run.elapsed(), 2), "env": run.env,
             "summary": summary(run),
         }))
-    return buf.getvalue()
 
 
 # ------------------------------------------------------------ command runner
@@ -692,6 +718,7 @@ class Exec:
         self.exit_code: int | None = None
         self.started = time.time()
         self.ended: float | None = None
+        self.note: str | None = None  # why the server stopped it, if it did
 
     def elapsed(self) -> float:
         end = self.ended if self.ended is not None else time.time()
@@ -706,15 +733,14 @@ def start_exec(cmd: str) -> Exec:
     EXEC_ROOT.mkdir(parents=True, exist_ok=True)
     eid = new_id()
     path = EXEC_ROOT / f"{eid}.out"
-    handle = open(path, "wb")
-    try:
-        # Its own session, so stop_exec can signal the whole pipeline rather
-        # than just the shell that `sh -c` put in front of it.
-        proc = subprocess.Popen(cmd, shell=True, cwd=str(HOME),
-                                stdin=subprocess.DEVNULL, stdout=handle,
-                                stderr=subprocess.STDOUT, start_new_session=True)
-    finally:
-        handle.close()
+    path.touch()
+    # Its own session, so stop_exec can signal the whole pipeline rather than
+    # just the shell that `sh -c` put in front of it. Output comes through a
+    # pipe rather than straight into the file, so _copy_exec can cap it exactly
+    # -- `yes` writes hundreds of MB a second, faster than any size poll.
+    proc = subprocess.Popen(cmd, shell=True, cwd=str(HOME),
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, start_new_session=True)
     ex = Exec(eid, cmd, path)
     ex.proc = proc
     with _EXECS_LOCK:
@@ -732,8 +758,42 @@ def start_exec(cmd: str) -> Exec:
     return ex
 
 
+def _copy_exec(ex: Exec) -> None:
+    """Pipe -> output file, up to EXEC_MAX_BYTES; past that, stop the command
+    and discard the rest until the pipe closes."""
+    written = 0
+    with ex.proc.stdout as pipe, open(ex.path, "ab") as out:
+        for chunk in iter(lambda: pipe.read1(1 << 16), b""):
+            room = EXEC_MAX_BYTES - written
+            if room > 0:
+                out.write(chunk[:room])
+                out.flush()
+                written += min(len(chunk), room)
+            if len(chunk) > room and not ex.note:
+                stop_exec(ex, f"output passed {EXEC_MAX_BYTES / (1 << 20):g} MB")
+
+
 def _reap_exec(ex: Exec) -> None:
+    """Wait for the command, stopping it if it outgrows EXEC_MAX_BYTES of
+    output or runs past EXEC_TIMEOUT, and say so at the end of its output."""
+    copier = threading.Thread(target=_copy_exec, args=(ex,), daemon=True)
+    copier.start()
+    timer = threading.Timer(EXEC_TIMEOUT, stop_exec,
+                            args=(ex, f"ran longer than {EXEC_TIMEOUT:g} s"))
+    timer.daemon = True
+    timer.start()
     ex.exit_code = ex.proc.wait()
+    timer.cancel()
+    # The shell has exited; give the copier a moment for the pipe's last bytes.
+    # A background job that inherited the pipe can hold it open indefinitely,
+    # so this does not wait for EOF.
+    copier.join(timeout=2.0)
+    if ex.note:
+        try:
+            with open(ex.path, "ab") as fh:
+                fh.write(f"\n[stopped by the console: {ex.note}]\n".encode())
+        except OSError:
+            pass
     ex.status = "done" if ex.exit_code == 0 else "failed"
     ex.ended = time.time()
 
@@ -744,25 +804,66 @@ def find_exec(eid: str) -> Exec | None:
 
 
 def read_exec(ex: Exec, offset: int) -> tuple[str, int, bool]:
-    if offset < 0:
-        offset = 0
-    data = b""
-    try:
-        with open(ex.path, "rb") as fh:
-            fh.seek(offset)
-            data = fh.read()
-    except OSError:
-        data = b""
-    return data.decode("utf-8", "replace"), offset + len(data), ex.status != "running"
+    finished = ex.status != "running"
+    return read_chunk(ex.path, offset, finished)
 
 
-def stop_exec(ex: Exec) -> None:
-    if ex.proc is None or ex.status != "running":
-        return
+def _signal_exec(ex: Exec, sig: int) -> None:
     try:
-        os.killpg(os.getpgid(ex.proc.pid), signal.SIGTERM)
+        os.killpg(os.getpgid(ex.proc.pid), sig)
     except OSError:
         pass
+
+
+def stop_exec(ex: Exec, reason: str | None = None) -> None:
+    """SIGTERM the command's process group, then SIGKILL it if it is still
+    there five seconds later -- a pipeline that traps TERM must not outlive Stop."""
+    if ex.proc is None or ex.status != "running":
+        return
+    if reason:
+        ex.note = reason
+    _signal_exec(ex, signal.SIGTERM)
+
+    def escalate():
+        try:
+            ex.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _signal_exec(ex, signal.SIGKILL)
+    threading.Thread(target=escalate, daemon=True).start()
+
+
+def host_name(netloc: str) -> str:
+    """The host part of a Host header or URL netloc, lower-cased, port dropped:
+    "LOCALHOST:8080" -> "localhost", "[::1]:8080" -> "::1"."""
+    netloc = netloc.strip().lower()
+    if netloc.startswith("["):
+        return netloc[1:netloc.find("]")] if "]" in netloc else ""
+    return netloc.rsplit(":", 1)[0] if netloc.count(":") == 1 else netloc
+
+
+def read_chunk(path: pathlib.Path, offset: int, finished: bool) -> tuple[str, int, bool]:
+    """(text from offset, new offset, done) for an append-only file.
+
+    At most READ_CHUNK bytes per call, cut back to the last newline when there
+    is one so a line is not split across polls; done only once the writer has
+    stopped *and* everything has been handed out. `finished` must be sampled
+    before the read, or a run that ends between the read and the check would
+    report done with its last lines still unread.
+    """
+    offset = max(0, offset)
+    try:
+        with open(path, "rb") as fh:
+            size = os.fstat(fh.fileno()).st_size
+            fh.seek(offset)
+            data = fh.read(READ_CHUNK)
+    except OSError:
+        return "", offset, finished
+    if len(data) == READ_CHUNK and offset + len(data) < size:
+        cut = data.rfind(b"\n")
+        if cut >= 0:
+            data = data[:cut + 1]
+    end = offset + len(data)
+    return data.decode("utf-8", "replace"), end, finished and end >= size
 
 
 def json_dumps(obj) -> str:
@@ -824,8 +925,28 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return None
 
+    def _trusted(self, mutating: bool) -> bool:
+        """Refuse what a foreign page could send; see ALLOWED_HOSTS."""
+        if host_name(self.headers.get("Host", "")) not in ALLOWED_HOSTS:
+            self._json(403, {"error": "unexpected Host header"})
+            return False
+        if not mutating:
+            return True
+        origin = self.headers.get("Origin")
+        if origin is not None and host_name(urllib.parse.urlparse(origin).netloc) not in ALLOWED_HOSTS:
+            self._json(403, {"error": "cross-origin request refused"})
+            return False
+        if self.command == "POST":
+            ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                self._json(415, {"error": "expected Content-Type: application/json"})
+                return False
+        return True
+
     # -- routing -----------------------------------------------------
     def do_GET(self):
+        if not self._trusted(mutating=False):
+            return
         parsed = urllib.parse.urlparse(self.path)
         if self.path == "/" or self.path == "/index.html":
             return self._serve_file(STATIC_DIR / "index.html")
@@ -867,22 +988,26 @@ class Handler(BaseHTTPRequestHandler):
                 offset = int(qs.get("offset", ["0"])[0])
                 stream = qs.get("stream", ["log"])[0]
                 text, new_off, done = read_log(run, offset, stream)
-                # The log poll is also the heartbeat: the page already calls it
-                # every tick, so progress and liveness ride along instead of
-                # costing a second request.
-                scan_progress(run)
-                return self._json(200, {
-                    "offset": new_off, "text": text, "done": done, "stream": stream,
-                    "elapsed": round(run.elapsed(), 2),
-                    "progress": dict(run.progress),
-                    "heartbeat": heartbeat(run),
-                })
+                body = {"offset": new_off, "text": text, "done": done, "stream": stream,
+                        "elapsed": round(run.elapsed(), 2)}
+                # The transcript poll is also the heartbeat: the page already
+                # calls it every tick, so progress and liveness ride along
+                # instead of costing a second request. Only that poll -- the
+                # trace pull on the same tick would walk the frame directories
+                # again and reset the heartbeat's baseline a few ms early.
+                if stream != "trace":
+                    scan_progress(run)
+                    body["progress"] = dict(run.progress)
+                    body["heartbeat"] = heartbeat(run)
+                return self._json(200, body)
             return self._json(404, {"error": "unknown endpoint"})
         if parsed.path.startswith("/runs/"):  # files of a run
             return self._serve_run_file(parsed.path[len("/runs/"):])
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):
+        if not self._trusted(mutating=True):
+            return
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/runs":
             return self._post_run()
@@ -894,7 +1019,9 @@ class Handler(BaseHTTPRequestHandler):
             if run is None:
                 return self._json(404, {"error": "no such run"})
             if len(parts) == 2 and parts[1] == "label":
-                body = self._read_json_body() or {}
+                body = self._read_json_body()
+                if not isinstance(body, dict):
+                    return self._json(400, {"error": "expected a JSON body"})
                 run.label = str(body.get("label", "")).strip()[:80]
                 run.meta["label"] = run.label
                 try:
@@ -912,7 +1039,7 @@ class Handler(BaseHTTPRequestHandler):
         benchmark = str(body.get("benchmark", "")).strip()
         algorithm = str(body.get("algorithm", "simpl")).strip()
         verbose = bool(body.get("verbose", False))
-        env = clean_env(body.get("env"))
+        env = body.get("env")  # launch() filters it through clean_env
         if algorithm not in ALGORITHMS:
             return self._json(400, {"error": f"algorithm must be one of {ALGORITHMS}"})
         target = (BENCH_ROOT / benchmark).resolve()
@@ -956,6 +1083,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(201, self._exec_view(ex))
 
     def do_DELETE(self):
+        if not self._trusted(mutating=True):
+            return
         path = urllib.parse.urlparse(self.path).path
         if path.startswith("/api/runs/"):
             rid = urllib.parse.unquote(path[len("/api/runs/"):].split("/")[0])
@@ -994,10 +1123,11 @@ class Handler(BaseHTTPRequestHandler):
             # live heartbeat does not: it walks the frame directories, and is
             # only worth that for the run actually being watched.
             "summary": summary(run),
-            "progress": round(run.progress["fraction"], 3),
         }
-        if detail:
+        if run.status == "running":
             scan_progress(run)
+        view["progress"] = round(run.progress["fraction"], 3)
+        if detail:
             view["artifacts"] = artifacts(run)
             view["workDir"] = str(run.work)
             view["progress"] = dict(run.progress)
@@ -1007,11 +1137,12 @@ class Handler(BaseHTTPRequestHandler):
     def _download_run(self, run: Run, qs) -> None:
         what = (qs.get("what", ["log"])[0] or "log").lower()
         if what == "all":
-            try:
-                body = export_zip(run)
-            except OSError as e:
-                return self._json(500, {"error": f"could not build the archive: {e}"})
-            return self._send_download(f"ktplace-{run.id}.zip", body, "application/zip")
+            with tempfile.TemporaryFile() as buf:
+                try:
+                    export_zip(run, buf)
+                except OSError as e:
+                    return self._json(500, {"error": f"could not build the archive: {e}"})
+                return self._stream_fileobj(buf, f"ktplace-{run.id}.zip", "application/zip")
         files = {
             "log": ("ktplace.log", "text/plain; charset=utf-8"),
             "trace": ("ktplace_trace.log", "text/plain; charset=utf-8"),
@@ -1023,15 +1154,17 @@ class Handler(BaseHTTPRequestHandler):
         name, ctype = files[what]
         return self._stream_download(run.work / name, f"{run.id}-{name}", ctype)
 
-    def _send_download(self, filename: str, body: bytes, ctype: str) -> None:
-        self._send(200, body, ctype,
-                   {"Content-Disposition": f'attachment; filename="{filename}"'})
-
     def _stream_download(self, path: pathlib.Path, filename: str, ctype: str) -> None:
         try:
-            size = path.stat().st_size
+            fh = open(path, "rb")
         except OSError:
             return self._json(404, {"error": f"no such file: {path.name}"})
+        with fh:  # streamed: a trace log can be large
+            self._stream_fileobj(fh, filename, ctype)
+
+    def _stream_fileobj(self, fh, filename: str, ctype: str) -> None:
+        size = fh.seek(0, os.SEEK_END)
+        fh.seek(0)
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(size))
@@ -1041,8 +1174,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == "HEAD":
             return
         try:
-            with open(path, "rb") as fh:  # streamed: a trace log can be large
-                shutil.copyfileobj(fh, self.wfile, length=1 << 16)
+            shutil.copyfileobj(fh, self.wfile, length=1 << 16)
         except OSError:
             pass
 

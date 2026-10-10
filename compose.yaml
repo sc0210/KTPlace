@@ -63,7 +63,11 @@ services:
       - web-runs:/ktplace/runs
     environment:
       # The in-page command runner is a shell in this container, so it is off by
-      # default; on here because the published port is loopback-only.
+      # default. On here for local development: the port is loopback-only, and
+      # the server refuses requests whose Host/Origin is not localhost or that
+      # are not JSON, so a web page you visit cannot drive it (CSRF, DNS
+      # rebinding). Reaching the console under another name needs
+      # KTPLACE_WEB_ALLOWED_HOSTS.
       KTPLACE_WEB_ALLOW_EXEC: "1"
     restart: unless-stopped
 
