@@ -177,10 +177,11 @@ TEST_constraint := constraint/test/test_constraint.cc
 TEST_option := test/test_option.cc
 TEST_viz := visualization/test/test_viz.cc
 TEST_detail := detailPlacer/test/test_detail.cc
+TEST_ntuplace1 := placer/ntuplace1/test/test_ntuplace1.cc
 
 TEST_BINS := $(BIN_DIR)/test_datamodel $(BIN_DIR)/test_adaptor $(BIN_DIR)/test_flow \
              $(BIN_DIR)/test_util $(BIN_DIR)/test_constraint $(BIN_DIR)/test_option $(BIN_DIR)/test_viz \
-             $(BIN_DIR)/test_detail
+             $(BIN_DIR)/test_detail $(BIN_DIR)/test_ntuplace1
 
 # Builds the test binaries without running them. `make coverage` needs this:
 # the coverage driver wants to run the binaries itself, once, under the
@@ -230,6 +231,10 @@ $(BIN_DIR)/test_viz: $(TEST_viz) $(LIB_OBJS) | dirs
 $(BIN_DIR)/test_detail: $(TEST_detail) $(LIB_OBJS) | dirs
 	@echo "  Building test_detail..."
 	@$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ $(TEST_detail) $(LIB_OBJS) $(LIBS) $(COVERAGE_LDFLAGS) $(TEST_LIBS)
+
+$(BIN_DIR)/test_ntuplace1: $(TEST_ntuplace1) $(LIB_OBJS) | dirs
+	@echo "  Building test_ntuplace1..."
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ $(TEST_ntuplace1) $(LIB_OBJS) $(LIBS) $(COVERAGE_LDFLAGS) $(TEST_LIBS)
 
 # ============================================================================
 # Line coverage
