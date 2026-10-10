@@ -15,10 +15,10 @@ CXX := g++
 # lines back through the optimizer at higher levels, which makes the uncovered
 # set harder to read and the numbers less trustworthy.
 ifeq ($(COVERAGE),1)
-  CXXFLAGS := -std=c++23 -Wall -Wextra -Wpedantic -Wshadow -O0 -g -pthread --coverage
+  CXXFLAGS := -std=c++23 -Wall -Wextra -Wpedantic -Wshadow -Wno-psabi -O0 -g -pthread --coverage
   COVERAGE_LDFLAGS := --coverage
 else
-  CXXFLAGS := -std=c++23 -Wall -Wextra -Wpedantic -Wshadow -O2 -g -pthread
+  CXXFLAGS := -std=c++23 -Wall -Wextra -Wpedantic -Wshadow -Wno-psabi -O2 -g -pthread
 endif
 # All quoted includes are project-root-relative (e.g. "datamodel/kt_dm.h"),
 # so the project root (this directory) is the only include path needed.
@@ -55,8 +55,13 @@ LOCAL_SRCS := kt_flowMgr.cc kt_place.cc kt_option.cc
 # Object files for current directory
 LOCAL_OBJS := $(LOCAL_SRCS:%.cc=$(OBJ_DIR)/%.o)
 
-# Get object files from subdirectories via their Master.make files
-SUBDIR_OBJS := $(foreach dir,$(SUBDIRS),$(shell $(MAKE) -s -C $(dir) -f Master.make objlist OBJ_DIR=$(OBJ_DIR)/$(dir)))
+# Get object files from subdirectories via their Master.make files. MAKEFLAGS=
+# keeps the parent's jobserver handle out of these parse-time sub-makes, which
+# are inside $(shell) and so cannot reach it; without it make warns "jobserver
+# unavailable" eight times (once per subdirectory) and falls back to -j1.
+# They only print object names, so serial is fine either way -- the flush just
+# keeps the build output clean.
+SUBDIR_OBJS := $(foreach dir,$(SUBDIRS),$(shell MAKEFLAGS= $(MAKE) -s -C $(dir) -f Master.make objlist OBJ_DIR=$(OBJ_DIR)/$(dir)))
 
 # All object files
 ALL_OBJS := $(LOCAL_OBJS) $(SUBDIR_OBJS)
@@ -172,10 +177,11 @@ TEST_constraint := constraint/test/test_constraint.cc
 TEST_option := test/test_option.cc
 TEST_viz := visualization/test/test_viz.cc
 TEST_detail := detailPlacer/test/test_detail.cc
+TEST_ntuplace1 := placer/ntuplace1/test/test_ntuplace1.cc
 
 TEST_BINS := $(BIN_DIR)/test_datamodel $(BIN_DIR)/test_adaptor $(BIN_DIR)/test_flow \
              $(BIN_DIR)/test_util $(BIN_DIR)/test_constraint $(BIN_DIR)/test_option $(BIN_DIR)/test_viz \
-             $(BIN_DIR)/test_detail
+             $(BIN_DIR)/test_detail $(BIN_DIR)/test_ntuplace1
 
 # Builds the test binaries without running them. `make coverage` needs this:
 # the coverage driver wants to run the binaries itself, once, under the
@@ -225,6 +231,10 @@ $(BIN_DIR)/test_viz: $(TEST_viz) $(LIB_OBJS) | dirs
 $(BIN_DIR)/test_detail: $(TEST_detail) $(LIB_OBJS) | dirs
 	@echo "  Building test_detail..."
 	@$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ $(TEST_detail) $(LIB_OBJS) $(LIBS) $(COVERAGE_LDFLAGS) $(TEST_LIBS)
+
+$(BIN_DIR)/test_ntuplace1: $(TEST_ntuplace1) $(LIB_OBJS) | dirs
+	@echo "  Building test_ntuplace1..."
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ $(TEST_ntuplace1) $(LIB_OBJS) $(LIBS) $(COVERAGE_LDFLAGS) $(TEST_LIBS)
 
 # ============================================================================
 # Line coverage

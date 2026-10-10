@@ -9,6 +9,7 @@
 #include "visualization/kt_animator.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -1201,15 +1202,69 @@ void SimplePlacer::Impl::binCells(const std::vector<double> &px, const std::vect
         cellBin_.assign(numMovable_, 0);
         cellSlot_.assign(numMovable_, 0);
     }
-    for (std::size_t i = 0; i < numMovable_; ++i) {
-        std::size_t ix, iy;
-        grid_.locate(px[i], py[i], ix, iy);
-        const std::size_t k = grid_.at(ix, iy);
-        grid_.occ[k] += area_[i];
-        cellBin_[i] = static_cast<std::uint32_t>(k);
-        cellSlot_[i] = static_cast<std::uint32_t>(binCells_[k].size());
-        binCells_[k].push_back(static_cast<std::uint32_t>(i));
+    if (numMovable_ == 0) {
+        return;
     }
+    const std::size_t nb = grid_.size();
+
+    // Binning is a map over cells followed by a scatter, and both are data
+    // parallel. The scatter deliberately does not preserve write order; the sort
+    // in the last step restores the exact serial order (ascending cell index
+    // inside every bin), so this produces the same binCells_/cellBin_/cellSlot_
+    // and the same per-bin occupancy as the single-threaded loop it replaced.
+    tbb::parallel_for(
+        tbb::blocked_range<std::size_t>(0, numMovable_, 4096),
+        [&](const tbb::blocked_range<std::size_t> &r) {
+            for (std::size_t i = r.begin(); i < r.end(); ++i) {
+                std::size_t ix, iy;
+                grid_.locate(px[i], py[i], ix, iy);
+                cellBin_[i] = static_cast<std::uint32_t>(grid_.at(ix, iy));
+            }
+        });
+
+    std::vector<std::size_t> start(nb + 1, 0);
+    for (std::size_t i = 0; i < numMovable_; ++i) {
+        ++start[cellBin_[i] + 1];
+    }
+    for (std::size_t k = 0; k < nb; ++k) {
+        start[k + 1] += start[k];
+    }
+
+    std::unique_ptr<std::atomic<std::size_t>[]> cursor(new std::atomic<std::size_t>[nb]);
+    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, nb, 512),
+                      [&](const tbb::blocked_range<std::size_t> &r) {
+                          for (std::size_t k = r.begin(); k < r.end(); ++k) {
+                              binCells_[k].resize(start[k + 1] - start[k]);
+                              cursor[k].store(0, std::memory_order_relaxed);
+                          }
+                      });
+
+    tbb::parallel_for(
+        tbb::blocked_range<std::size_t>(0, numMovable_, 4096),
+        [&](const tbb::blocked_range<std::size_t> &r) {
+            for (std::size_t i = r.begin(); i < r.end(); ++i) {
+                const std::size_t k = cellBin_[i];
+                const std::size_t pos = cursor[k].fetch_add(1, std::memory_order_relaxed);
+                binCells_[k][pos] = static_cast<std::uint32_t>(i);
+            }
+        });
+
+    // Restore the serial order, then recompute the slots and each bin's
+    // occupancy by summing its cells in cell-index order -- the same order the
+    // original accumulation used, so grid_.occ carries the same values.
+    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, nb, 512),
+                      [&](const tbb::blocked_range<std::size_t> &r) {
+                          for (std::size_t k = r.begin(); k < r.end(); ++k) {
+                              std::vector<std::uint32_t> &v = binCells_[k];
+                              std::sort(v.begin(), v.end());
+                              double occ = 0.0;
+                              for (std::size_t p = 0; p < v.size(); ++p) {
+                                  cellSlot_[v[p]] = static_cast<std::uint32_t>(p);
+                                  occ += area_[v[p]];
+                              }
+                              grid_.occ[k] = occ;
+                          }
+                      });
 }
 
 double SimplePlacer::Impl::densityOf(std::size_t ix0, std::size_t ix1, std::size_t iy0,
@@ -1354,9 +1409,9 @@ void SimplePlacer::Impl::nonlinearScale(const std::vector<std::uint32_t> &cells,
             }
             return sa;
         };
-        const double regionAvail = availIn(a0, a1);
-        if (regionAvail > 0.0) {
-            const double thresh = regionAvail / 10.0;
+        const double availHere = availIn(a0, a1);
+        if (availHere > 0.0) {
+            const double thresh = availHere / 10.0;
             bool grew = true;
             std::size_t guard = 0;
             while (grew && guard++ < 24) {
@@ -1969,17 +2024,39 @@ void SimplePlacer::Impl::lookAheadLegalize() {
                 exFree += grid_.occ[k] - cap;
             }
         }
-        std::size_t onMacro = 0;
-        for (std::size_t i = 0; i < numMovable_; ++i) {
-            for (const std::uint32_t fv : fixVertex_) {
-                const Vertex &fv2 = graph_.getVertex(fv);
-                if (pinX_[i] < vx_[fv] + fv2.width && pinX_[i] + areaMovW_[i] > vx_[fv] &&
-                    pinY_[i] < vy_[fv] + fv2.height && pinY_[i] + areaMovH_[i] > vy_[fv]) {
-                    ++onMacro;
-                    break;
-                }
-            }
+        // Which cells sit on a macro is a diagnostic, but the obvious nest is
+        // O(cells * fixed) -- 114M rectangle tests on adaptec1, repeated on every
+        // global iteration -- and it re-read each macro's vertex inside the inner
+        // loop. Hoist the macro rectangles once, then count in parallel: the
+        // total is an integer, so reducing it across threads cannot change the
+        // value.
+        const std::size_t nFixed = fixVertex_.size();
+        std::vector<double> macroX0(nFixed), macroY0(nFixed), macroX1(nFixed), macroY1(nFixed);
+        for (std::size_t j = 0; j < nFixed; ++j) {
+            const std::uint32_t fv = fixVertex_[j];
+            const Vertex &fv2 = graph_.getVertex(fv);
+            macroX0[j] = vx_[fv];
+            macroY0[j] = vy_[fv];
+            macroX1[j] = vx_[fv] + fv2.width;
+            macroY1[j] = vy_[fv] + fv2.height;
         }
+        const std::size_t onMacro = tbb::parallel_reduce(
+            tbb::blocked_range<std::size_t>(0, numMovable_, 1024), std::size_t{0},
+            [&](const tbb::blocked_range<std::size_t> &r, std::size_t acc) {
+                for (std::size_t i = r.begin(); i < r.end(); ++i) {
+                    const double x0 = pinX_[i], x1 = x0 + areaMovW_[i];
+                    const double y0 = pinY_[i], y1 = y0 + areaMovH_[i];
+                    for (std::size_t j = 0; j < nFixed; ++j) {
+                        if (x0 < macroX1[j] && x1 > macroX0[j] && y0 < macroY1[j] &&
+                            y1 > macroY0[j]) {
+                            ++acc;
+                            break;
+                        }
+                    }
+                }
+                return acc;
+            },
+            [](std::size_t a, std::size_t b) { return a + b; });
         ktlog.trace(
             "  residual: excess on macro bins {:.4g}, on free bins {:.4g} "
             "({:.0f} macro bins); cells overlapping a macro: {}",

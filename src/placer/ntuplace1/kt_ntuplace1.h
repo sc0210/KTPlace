@@ -11,18 +11,22 @@
 // difference measured between them is the global placement, which is the point of
 // having both.
 //
-// Three ideas from the paper are implemented, and they are the ones that make it
-// a ratio partitioner rather than a balanced one:
+// Each cut is a Fiduccia-Mattheyses min-cut, with three ideas from the paper on
+// top that make it a ratio partitioner rather than a balanced one:
 //
-//   * whitespace distribution sets the balance constraint per cut, so neither
-//     side is overfilled before the cut is even made;
-//   * net weighting prices each hyperedge by the wirelength it would add if the
-//     cut severed it, with dummy nodes standing in for the pins outside the
-//     region, so a net is pulled towards the side its outside pins are on;
-//   * look-ahead bipartitioning asks whether a sub-region could be legalized at
-//     all, and shifts the cut towards the emptier side until it could. This is
-//     what stops the recursion from painting itself into a corner that the
-//     legalizer then has to rescue.
+//   * whitespace distribution: each side's share of the cell area is set by the
+//     free row area it has (rows less the fixed blocks on them), so both halves
+//     end up equally utilised and a half that is mostly macro gets few cells;
+//   * terminal propagation: a pin outside the region -- a fixed pin, or a block
+//     already sent to another region -- acts as a block locked on its side of
+//     the cut (the paper's dummy node), so a net is pulled towards its outside
+//     pins instead of being cut at random;
+//   * look-ahead: a cut that leaves either side fuller than it can hold is
+//     redone with a tighter balance window, so the recursion does not paint
+//     itself into a corner the legalizer then has to rescue.
+//
+// The placement area is the rows' bounding box, not the die box: the die also
+// spans pads and macros outside the rows, where no cell can go.
 
 #pragma once
 
@@ -47,34 +51,26 @@ struct RatioPlaceParams {
     // ratio constraint drives a cut to a sliver, which the look-ahead check is
     // meant to prevent but which a pathological design can still provoke.
     std::size_t maxLevels = 40;
-    // Hyperedge weight floor. A net whose cut cost computes to zero -- every pin
-    // coincident, or a net already entirely on one side -- would otherwise
-    // contribute nothing to the min-cut and stop pulling.
-    double minNetWeight = 1e-3;
-    // How many times a cut may be re-balanced when the look-ahead check says the
-    // sub-region cannot be legalized. Each retry moves the cut towards the
-    // emptier side, so this is a bound on how far the ratio may be skewed.
+    // How many times a cut may be redone when the look-ahead check finds a side
+    // fuller than it can hold. Each retry halves the balance window.
     std::size_t maxRatioRetries = 24;
     // Set to log per-region decisions.
     bool verbose = false;
-    // Frame directory; empty writes nothing. One frame per accepted cut.
-    std::string plotDir;
 };
 
 struct RatioPlaceResult {
     std::size_t numMovable = 0;
     std::size_t numFixed = 0;
     std::size_t nets = 0;
-    // Cuts accepted, and cuts discarded and re-balanced because the look-ahead
-    // check found the sub-region unlegalizable.
+    // Cuts accepted, and cuts redone because the look-ahead check found a side
+    // fuller than it could hold.
     std::size_t cuts = 0;
     std::size_t ratioRetries = 0;
     std::size_t maxDepth = 0;
     // Smallest leaf, i.e. the tightest the recursion packed a region.
     std::size_t minLeafCells = 0;
     double hpwlFinal = 0.0;
-    // Fraction of the die a block set can occupy before the ratio is skewed away
-    // from even. Reported because a run that needed many retries is a run whose
+    // Look-ahead retries per accepted cut. A run that needed many is one whose
     // balance was fighting the design, and that is worth seeing.
     double meanImbalance = 0.0;
 };

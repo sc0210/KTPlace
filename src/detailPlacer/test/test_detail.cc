@@ -47,7 +47,7 @@ constexpr double kRowPitch = 10.0;
 void addRow(PlacementDB &db, int rowIndex, double numSites, double originX = 0.0) {
     const double y = rowIndex * kRowPitch;
     const std::size_t row = db.addRow(y, kRowHeight, kSite, kSite);
-    db.addSubrow(row, originX, numSites);
+    (void)db.addSubrow(row, originX, numSites);
 }
 
 /// A single movable cell snapped to a site.
@@ -79,17 +79,9 @@ void addFixed(PlacementDB &db, const std::string &name, double x, int rowIndex,
 /// A two-pin net between two cells. Both the net and its pins are created, since
 /// addPin resolves the net by name and throws if it does not exist.
 void addNet(PlacementDB &db, const std::string &net, const std::string &a, const std::string &b) {
-    db.addNet(net);
-    db.addPin(a, net, 0.0, 0.0, true);
-    db.addPin(b, net, 0.0, 0.0, false);
-}
-
-/// A one-pin net from a cell to a fixed cell.
-void addNet(PlacementDB &db, const std::string &net, const std::string &a, const std::string &b,
-            bool /*unused*/) {
-    db.addNet(net);
-    db.addPin(a, net, 0.0, 0.0, true);
-    db.addPin(b, net, 0.0, 0.0, false);
+    (void)db.addNet(net);
+    (void)db.addPin(a, net, 0.0, 0.0, true);
+    (void)db.addPin(b, net, 0.0, 0.0, false);
 }
 
 [[nodiscard]] DetailPlaceParams only(std::size_t which) {
@@ -628,7 +620,7 @@ BOOST_AUTO_TEST_CASE(a_cell_with_no_nets_stays_where_it_is) {
     addCell(db, "n1", 1.0, 0);
     addCell(db, "n2", 2.0, 0);
     FastDetailedPlacer dp(db);
-    const DetailPlaceResult r = dp.place();
+    (void)dp.place();
     BOOST_TEST(isLegal(db));
     const auto [x, y] = db.getCellPosition("lonely");
     BOOST_TEST(x == 7.0);
@@ -659,8 +651,8 @@ BOOST_AUTO_TEST_CASE(a_row_split_by_a_subrow_gap_is_respected) {
     // choosing a subrow. The gap between them has no sites.
     PlacementDB db;
     const std::size_t row = db.addRow(0.0, kRowHeight, kSite, kSite);
-    db.addSubrow(row, 0.0, 5.0);
-    db.addSubrow(row, 20.0, 5.0);
+    (void)db.addSubrow(row, 0.0, 5.0);
+    (void)db.addSubrow(row, 20.0, 5.0);
     addCell(db, "a", 1.0, 0);
     addCell(db, "b", 21.0, 0);
     FastDetailedPlacer dp(db);

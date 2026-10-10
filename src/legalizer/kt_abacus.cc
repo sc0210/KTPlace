@@ -841,14 +841,16 @@ void report(const LegalizeResult &r) {
     if (r.overlappingPairs != 0 || r.offRow != 0 || r.overFixed != 0) {
         ktlog.warning("legalization is not legal; see the counts above");
     }
-    // Abacus places into single rows, so a cell taller than one row stays where
-    // global placement left it, overlapping. There is no multi-row legalizer in
-    // this build, so the affected cells are named rather than left to be inferred
-    // from a count. Reported after the table so the two can be compared.
+    // A cell Abacus could not fit into any row it searched stays where global
+    // placement left it, overlapping. That is a cell taller than one row (the flow
+    // sends those to the multi-row legalizer instead), or one whose nearby rows
+    // were full -- typically a global placement that piled cells onto macros or
+    // outside the rows. Named here rather than left to be inferred from a count.
     if (r.outOfRows > 0) {
         ktlog.warning(
-            "{} cell(s) taller than one row could not be placed and are still at their global "
-            "placement positions. The placement is not legal; see \"cells out of rows\" above.",
+            "{} cell(s) could not be placed in any row and are still at their global placement "
+            "positions (no room within KTPLACE_ABACUS_MAX_ROW_DIST rows, or taller than a row). "
+            "The placement is not legal; see \"cells out of rows\" above.",
             r.outOfRows);
     }
 }

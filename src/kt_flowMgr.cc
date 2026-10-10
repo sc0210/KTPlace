@@ -176,7 +176,6 @@ void FlowMgr::Impl::runPlacement(const std::string &algorithm) {
         ktlog.echo("Running NTUPlace1 global placement (ratio partitioning)...");
         RatioPlacer placer(*db);
         RatioPlaceParams params;
-        params.plotDir = plot.dir;
         if (const char *e = std::getenv("KTPLACE_NTU_LEAF_CELLS")) {
             params.targetLeafCells = static_cast<std::size_t>(std::atoll(e));
         }
@@ -185,9 +184,6 @@ void FlowMgr::Impl::runPlacement(const std::string &algorithm) {
         }
         if (const char *e = std::getenv("KTPLACE_NTU_RETRIES")) {
             params.maxRatioRetries = static_cast<std::size_t>(std::atoll(e));
-        }
-        if (const char *e = std::getenv("KTPLACE_NTU_MIN_NET_WEIGHT")) {
-            params.minNetWeight = std::atof(e);
         }
         if (const char *e = std::getenv("KTPLACE_NTU_VERBOSE")) {
             params.verbose = std::atoll(e) != 0;
