@@ -851,24 +851,17 @@ function renderDetail(run) {
   const gif = (run.artifacts || []).find((a) => a.rel.toLowerCase().endsWith(".gif"));
   setAnimation(gif ? `/runs/${run.id}/${gif.rel}` : null, run.status);
 
-  // Downloads. The transcript and trace are usually what people want to keep,
-  // so they get one click each; the archive bundles everything textual plus the
-  // final image, without the (potentially huge) frame gallery.
+  // Downloads, offered only for files the run actually wrote (run.downloads):
+  // a button for a missing file would fetch a 404 JSON and save it as a file.
   const exp = $("exports");
   exp.innerHTML = "";
-  for (const [title, what] of [["transcript", "log"], ["trace", "trace"],
-                               ["placed.pl", "placed"], ["request.json", "request"]]) {
+  for (const [title, what] of (run.downloads || [])) {
     const a = document.createElement("a");
     a.className = "btn"; a.textContent = "↓ " + title;
     a.href = `/api/runs/${run.id}/download?what=${what}`;
     a.setAttribute("download", "");
     exp.appendChild(a);
   }
-  const all = document.createElement("a");
-  all.className = "btn"; all.textContent = "↓ everything (.zip)";
-  all.href = `/api/runs/${run.id}/download?what=all`;
-  all.setAttribute("download", "");
-  exp.appendChild(all);
 
   const art = $("artifacts");
   art.innerHTML = "";

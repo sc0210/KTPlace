@@ -604,6 +604,27 @@ def artifacts(run: Run) -> list[dict]:
     return out
 
 
+def downloads(run: Run) -> list[list[str]]:
+    """Export buttons the page can offer: [title, what] for files that exist.
+
+    The page used to offer every download for every run, so a failed run's
+    "placed.pl" button fetched a 404 JSON -- saved as a file by the browser
+    and logged as a console error. Only what is there is offered; the archive
+    always works (it carries at least summary.json).
+    """
+    out = []
+    if (run.work / "ktplace.log").is_file():
+        out.append(["transcript", "log"])
+    if (run.work / "ktplace_trace.log").is_file():
+        out.append(["trace", "trace"])
+    if (run.work / "placed.pl").is_file():
+        out.append(["placed.pl", "placed"])
+    if (run.work / "request.json").is_file():
+        out.append(["request.json", "request"])
+    out.append(["everything (.zip)", "all"])
+    return out
+
+
 def summary(run: Run) -> dict:
     """Pick the run's headline numbers out of the transcript. Tolerant: a missing
     line just leaves that key absent, it must not fail the whole read.
@@ -1415,6 +1436,7 @@ class Handler(BaseHTTPRequestHandler):
         view["progress"] = round(run.progress["fraction"], 3)
         if detail:
             view["artifacts"] = artifacts(run)
+            view["downloads"] = downloads(run)
             view["workDir"] = str(run.work)
             view["progress"] = dict(run.progress)
             view["heartbeat"] = heartbeat(run)
