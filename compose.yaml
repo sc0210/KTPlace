@@ -35,8 +35,21 @@ services:
       - build-cov:/workspace/build-cov
       # SSH host keys live in a named volume so `ssh -p 2222 dev@127.0.0.1`
       # does not warn about changed host keys every time the container is
-      # recreated.
-      - ssh-host-keys:/etc/ssh/ssh_host_keys
+      # recreated. Mounted at /var/lib/ktplace-ssh to match where the
+      # entrypoint and sshd configuration read and write the key
+      # (docker/dev-entrypoint.sh, Dockerfile).
+      - ssh-host-keys:/var/lib/ktplace-ssh
+      # The public key allowed to log in. Compose expands ~ to the home
+      # directory on every OS; point KTPLACE_SSH_PUBKEY elsewhere for another
+      # key. Long form for create_host_path: false -- with the short form, a
+      # missing key file makes Docker create an empty *directory* at that path
+      # on the host, inside ~/.ssh, instead of failing.
+      - type: bind
+        source: ${KTPLACE_SSH_PUBKEY:-~/.ssh/id_ed25519.pub}
+        target: /run/ktplace/authorized_keys
+        read_only: true
+        bind:
+          create_host_path: false
     restart: unless-stopped
 
   # The web console: runs ktplace inside the container and serves the results.
