@@ -111,8 +111,13 @@ Open http://127.0.0.1:8080.
   *Environment overrides* (only `KTPLACE_*` keys with plain values are kept).
   The transcript streams live with a phase bar and a heartbeat (frames, CPU,
   memory), so a long solve is visibly alive.
-- **Review**: open the SVG gallery, the final image and the logs; download the
-  transcript, trace, `placed.pl`, `request.json`, or *everything (.zip)*.
+- **Review**: the *Run* tab has the stats, links and logs; the *Animated
+  placement* tab plays the run's GIF (loaded only when opened). Click the open
+  tab to fold it. Download the transcript, trace, `placed.pl`, `request.json`,
+  or *everything (.zip)*.
+- **How it works** (top right, or http://127.0.0.1:8080/guide): flow charts of
+  an experiment, the placement pipeline and the SimPL loop, plus what each
+  output file is and the main tuning knobs.
 - **History**: every run with status, time, HPWL and verdict; label or delete
   runs there. Runs live in the `web-runs` volume and survive `down`/`up`.
 

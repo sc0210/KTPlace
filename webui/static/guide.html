@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How KTPlace works</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%2311171c'/%3E%3Cpath%20d='M5%2012%2012%205M5%2027l22-22M27%2020%2020%2027'%20stroke='%234a9eff'%20stroke-width='3'%20stroke-linecap='round'/%3E%3Ccircle%20cx='12'%20cy='5'%20r='3'%20fill='%233fba7d'/%3E%3C/svg%3E">
+<style>
+/* Same tokens as the console, so the two pages read as one tool. */
+:root {
+  color-scheme: dark;
+  --bg: #0b0f12; --panel: #11171c; --line: #22303a; --text: #d7e0e6;
+  --muted: #7f929e; --accent: #4a9eff; --ok: #3fba7d; --bad: #e5524c; --run: #e0a94a;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { font: 12.5px var(--mono); background: #0d1216; border: 1px solid var(--line);
+  border-radius: 4px; padding: 0 4px; }
+header { position: sticky; top: 0; z-index: 20; display: flex; align-items: center;
+  flex-wrap: wrap; gap: 4px 14px; padding: 12px 20px; border-bottom: 1px solid var(--line);
+  background: rgba(11, 15, 18, .92); backdrop-filter: blur(6px); }
+header h1 { margin: 0; font-size: 17px; color: #fff; letter-spacing: .3px; }
+header .sub { color: var(--muted); font-size: 12px; }
+header nav { margin-left: auto; display: flex; gap: 14px; font-size: 13px; }
+.wrap { max-width: 980px; margin: 0 auto; padding: 20px 16px 60px; }
+.toc { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 24px; }
+.toc a { border: 1px solid var(--line); border-radius: 20px; padding: 4px 12px; font-size: 12px;
+  background: var(--panel); }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 18px 20px 22px; margin-bottom: 20px; scroll-margin-top: 70px; }
+h2 { margin: 0 0 6px; font-size: 18px; color: #fff; }
+.lede { color: var(--muted); margin: 0 0 18px; max-width: 70ch; }
+p { max-width: 75ch; }
+
+/* ---- flow charts: boxes and connectors in plain CSS ---- */
+.flow { display: flex; flex-direction: column; align-items: center; }
+.node { width: min(560px, 100%); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+  border-radius: 8px; background: #0d1216; padding: 10px 14px; }
+.node .t { font-weight: 600; color: #fff; display: flex; gap: 8px; align-items: baseline;
+  flex-wrap: wrap; }
+.node .n { font: 11px var(--mono); color: var(--accent); }
+.node .d { color: var(--text); font-size: 13px; margin-top: 2px; }
+.node .m { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.node.io { border-left-color: var(--muted); }
+.node.check { border-left-color: var(--ok); }
+.node.out { border-left-color: var(--run); }
+.arrow { width: 2px; height: 26px; background: var(--line); position: relative; }
+.arrow::after { content: ""; position: absolute; left: -5px; bottom: -1px;
+  border: 6px solid transparent; border-top-color: var(--line); border-bottom: 0; }
+.arrow[data-label]::before { content: attr(data-label); position: absolute; left: 12px; top: 4px;
+  white-space: nowrap; font-size: 11px; color: var(--muted); }
+/* A two-way branch: the incoming arrow forks into both columns (::before) and
+   the two rejoin underneath (::after), so it reads as "one or the other". */
+.split { width: min(760px, 100%); display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+  position: relative; padding: 16px 0; }
+.split::before, .split::after { content: ""; position: absolute; left: 25%; right: 25%;
+  height: 16px; border: 2px solid var(--line); }
+.split::before { top: 0; border-bottom: 0; border-radius: 6px 6px 0 0; }
+.split::after { bottom: 0; border-top: 0; border-radius: 0 0 6px 6px; }
+.split .node { width: 100%; }
+.split .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px;
+  margin-bottom: 4px; text-align: center; background: var(--panel); position: relative; }
+@media (max-width: 640px) {
+  .split { grid-template-columns: 1fr; padding: 0; }
+  .split::before, .split::after { display: none; }
+}
+
+/* The SimPL loop: a cycle drawn as a ring of steps with a return edge. */
+.loop { position: relative; width: min(560px, 100%); margin: 0 auto;
+  border: 2px dashed var(--line); border-radius: 14px; padding: 18px 16px 16px; }
+.loop .badge { position: absolute; top: -11px; left: 16px; background: var(--panel); padding: 0 8px;
+  font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+.loop .flow .node { width: 100%; }
+.loop .back { text-align: center; color: var(--muted); font-size: 12px; margin-top: 10px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+.tablewrap { overflow-x: auto; }
+pre { background: #0d1216; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px;
+  overflow-x: auto; font: 12.5px/1.5 var(--mono); }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted);
+  margin: 0 0 14px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px;
+  vertical-align: -1px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>How KTPlace works</h1>
+  <span class="sub">the placement flow, step by step</span>
+  <nav><a href="/">← Back to the console</a></nav>
+</header>
+
+<div class="wrap">
+  <div class="toc" aria-label="On this page">
+    <a href="#experiment">1 · Run an experiment</a>
+    <a href="#pipeline">2 · The placement pipeline</a>
+    <a href="#simpl">3 · Inside SimPL global placement</a>
+    <a href="#outputs">4 · What a run writes</a>
+    <a href="#tuning">5 · Tuning knobs</a>
+  </div>
+
+  <!-- 1 ------------------------------------------------------------------>
+  <section id="experiment">
+    <h2>1 · Run an experiment</h2>
+    <p class="lede">What you do in the console, from picking a design to comparing results.
+      Each step has a command-line equivalent for scripted experiments.</p>
+    <div class="flow">
+      <div class="node io"><div class="t"><span class="n">1</span>Pick a design</div>
+        <div class="d">Choose a benchmark under <code>benchmark/</code> (ISPD 2005, ISPD 2015,
+          ICCAD04, ISPD02) with the filter box in <b>New run</b>.</div></div>
+      <div class="arrow"></div>
+      <div class="node io"><div class="t"><span class="n">2</span>Choose the algorithm and settings</div>
+        <div class="d"><b>simpl</b> (quadratic + look-ahead legalization) or <b>ntuplace1</b>
+          (ratio partitioning). Tick <i>verbose</i> for the per-iteration trace, and add
+          <code>KTPLACE_*=value</code> lines to override tuning.</div></div>
+      <div class="arrow"></div>
+      <div class="node"><div class="t"><span class="n">3</span>Start the run</div>
+        <div class="d">The engine runs in the console container, in its own directory
+          <code>runs/&lt;id&gt;/</code>.</div>
+        <div class="m">CLI: <code>ktplace benchmark/ISPD_2005/adaptec1 -a simpl -w output/adaptec1</code></div></div>
+      <div class="arrow"></div>
+      <div class="node"><div class="t"><span class="n">4</span>Watch it work</div>
+        <div class="d">The phase bar follows the pipeline below; the heartbeat (frames/s, CPU,
+          memory, time since last output) tells a long solve from a hang. The transcript
+          streams live.</div></div>
+      <div class="arrow"></div>
+      <div class="node check"><div class="t"><span class="n">5</span>Read the verdict</div>
+        <div class="d">Detailed HPWL, overlapping pairs, unplaced cells, cells off rows, and
+          PASS/FAIL from the independent placement check.</div></div>
+      <div class="arrow"></div>
+      <div class="node out"><div class="t"><span class="n">6</span>Review the pictures</div>
+        <div class="d">The <b>Animated placement</b> tab plays the run; the gallery has every
+          SVG frame and the HPWL curve; <code>final.png</code> is the finished placement.</div></div>
+      <div class="arrow" data-label="change one knob, run again"></div>
+      <div class="node out"><div class="t"><span class="n">7</span>Compare and keep</div>
+        <div class="d"><b>Run history</b> lines runs up by HPWL and verdict; label the ones that
+          matter. Download the transcript, trace, <code>placed.pl</code>, or everything as a zip.</div></div>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------------>
+  <section id="pipeline">
+    <h2>2 · The placement pipeline</h2>
+    <p class="lede">Every run goes through the same stages, in this order
+      (<code>FlowMgr::run</code> in <code>src/kt_flowMgr.cc</code>). Global placement finds
+      good positions; legalization makes them real; detailed placement polishes.</p>
+    <div class="legend">
+      <span><i style="background:var(--muted)"></i>input / report</span>
+      <span><i style="background:var(--accent)"></i>placement stage</span>
+      <span><i style="background:var(--ok)"></i>independent check</span>
+      <span><i style="background:var(--run)"></i>output</span>
+    </div>
+    <div class="flow">
+      <div class="node io"><div class="t">Load the design</div>
+        <div class="d">Detect the format (Bookshelf <code>.nodes/.nets/.pl/.scl</code> or
+          LEF/DEF) and read cells, nets, rows, fixed macros and fences.</div>
+        <div class="m">Log: <code>Reading … input from …</code> · phase bar: <i>design loaded</i></div></div>
+      <div class="arrow"></div>
+      <div class="node io"><div class="t">Report the design</div>
+        <div class="d">Cell, net and row counts, and utilisation — said before placing, because an
+          over-full design cannot be placed legally whatever the placer does.</div></div>
+      <div class="arrow" data-label="-a simpl | -a ntuplace1"></div>
+      <div class="split">
+        <div><div class="lbl">default</div>
+          <div class="node"><div class="t">SimPL global placement</div>
+            <div class="d">Quadratic wirelength (B2B net model, CG solve) alternating with
+              look-ahead legalization that spreads cells out of over-full bins.
+              <a href="#simpl">See the loop ↓</a></div></div></div>
+        <div><div class="lbl">alternative</div>
+          <div class="node"><div class="t">NTUPlace1 global placement</div>
+            <div class="d">Recursive ratio partitioning: cut the die and the netlist together
+              until each region holds a few cells.</div></div></div>
+      </div>
+      <div class="arrow" data-label="any cell taller than a row?"></div>
+      <div class="split">
+        <div><div class="lbl">no — the usual case</div>
+          <div class="node"><div class="t">Abacus legalization</div>
+            <div class="d">Snap every cell into a row site with no overlaps, moving each as little
+              as possible (dynamic programming per row).</div></div></div>
+        <div><div class="lbl">yes</div>
+          <div class="node"><div class="t">Multi-row legalization</div>
+            <div class="d">Cut tall cells out of every row they span, then place the rest around
+              them.</div></div></div>
+      </div>
+      <div class="arrow"></div>
+      <div class="node check"><div class="t">Check: after legalization</div>
+        <div class="d">An independent pass over the placement: overlapping pairs, cells outside
+          the die, cells outside their fence → PASS / FAIL.</div></div>
+      <div class="arrow"></div>
+      <div class="node"><div class="t">FastDP detailed placement</div>
+        <div class="d">Local moves that keep the placement legal while cutting wirelength:
+          global swaps, vertical swaps between rows, and local reordering.</div></div>
+      <div class="arrow"></div>
+      <div class="node check"><div class="t">Check: after detailed placement</div>
+        <div class="d">The same independent check again, so a stage that broke legality is
+          caught where it happened.</div></div>
+      <div class="arrow"></div>
+      <div class="node out"><div class="t">Pictures and output</div>
+        <div class="d">Render <code>plots/final/final.png</code>, assemble the animated GIF from
+          the frames, write <code>placed.pl</code>, and print the stage timers.</div>
+        <div class="m">Log: <code>Placement completed successfully</code> · phase bar: <i>done</i></div></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------------>
+  <section id="simpl">
+    <h2>3 · Inside SimPL global placement</h2>
+    <p class="lede">Minimising quadratic wirelength alone pulls every cell to one point, so each
+      iteration pairs a wirelength solve (a <i>lower bound</i>: short but overlapping) with a
+      spreading step (an <i>upper bound</i>: spread out but longer). Anchors tie the two together
+      and tighten every iteration until the bounds meet.
+      <a href="https://github.com/coherent17/KTPlace/blob/main/docs/simpl.md">More in docs/simpl.md</a>.</p>
+    <div class="loop">
+      <span class="badge">repeat for each iteration</span>
+      <div class="flow">
+        <div class="node"><div class="t"><span class="n">a</span>Build the net model</div>
+          <div class="d">Bound-to-bound (B2B): each net becomes springs between its extreme pins
+            and the rest, so quadratic length tracks the real half-perimeter.</div></div>
+        <div class="arrow"></div>
+        <div class="node"><div class="t"><span class="n">b</span>Solve for wirelength</div>
+          <div class="d">Conjugate gradient on the sparse system, warm-started from the last
+            iterate, with anchor springs pulling toward the last spread positions.
+            → lower-bound HPWL.</div></div>
+        <div class="arrow"></div>
+        <div class="node"><div class="t"><span class="n">c</span>Look-ahead legalization</div>
+          <div class="d">Bin the cells, find over-full regions, and spread them top-down so each
+            region's cells fit its free area (avoiding macros and respecting fences).
+            → upper-bound HPWL.</div></div>
+        <div class="arrow"></div>
+        <div class="node"><div class="t"><span class="n">d</span>Strengthen the anchors</div>
+          <div class="d">Raise the anchor weight (α) so the next solve stays closer to the spread
+            positions.</div></div>
+      </div>
+      <div class="back">↺ back to <b>a</b> — stop when the gap between the bounds is small enough
+        or the iteration budget runs out</div>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------------>
+  <section id="outputs">
+    <h2>4 · What a run writes</h2>
+    <p class="lede">Everything goes under the work directory (<code>-w</code>); in the console
+      that is <code>runs/&lt;id&gt;/</code>.</p>
+    <div class="tablewrap"><table>
+      <thead><tr><th scope="col">File</th><th scope="col">What it is</th></tr></thead>
+      <tbody>
+        <tr><td><code>placed.pl</code></td><td>The result: every cell's position, in Bookshelf format.</td></tr>
+        <tr><td><code>ktplace.log</code></td><td>The transcript: stages, report tables, the verdict.</td></tr>
+        <tr><td><code>ktplace_trace.log</code></td><td>Per-iteration diagnostics (always written; <code>-v</code> also prints them).</td></tr>
+        <tr><td><code>plots/index.html</code></td><td>Gallery of every SVG frame per stage, and the HPWL curve.</td></tr>
+        <tr><td><code>plots/final/final.png</code></td><td>High-resolution still of the finished placement.</td></tr>
+        <tr><td><code>plots/anim/placement.gif</code></td><td>The animated run (unless <code>KTPLACE_ANIM=0</code>).</td></tr>
+        <tr><td><code>request.json</code></td><td>Console runs only: design, algorithm, overrides and the exact command.</td></tr>
+      </tbody>
+    </table></div>
+    <p>Pass <code>--no-plots</code> to skip every frame and picture; a full ISPD 2005 run
+      otherwise writes on the order of a gigabyte of frames.</p>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------------>
+  <section id="tuning">
+    <h2>5 · Tuning knobs</h2>
+    <p class="lede">The engine reads its tuning from <code>KTPLACE_*</code> environment variables,
+      not flags. In the console, put them in <i>Environment overrides</i>; on the command line,
+      prefix the command.</p>
+    <div class="tablewrap"><table>
+      <thead><tr><th scope="col">Variable</th><th scope="col">Stage</th><th scope="col">Effect</th></tr></thead>
+      <tbody>
+        <tr><td><code>KTPLACE_SIMPL_ITERS</code></td><td>SimPL</td><td>Iteration budget for global placement.</td></tr>
+        <tr><td><code>KTPLACE_SIMPL_SEED</code></td><td>SimPL</td><td>Seed for the initial placement; vary it to see run-to-run spread.</td></tr>
+        <tr><td><code>KTPLACE_SIMPL_GRID</code></td><td>SimPL</td><td>Density bin grid used by look-ahead legalization.</td></tr>
+        <tr><td><code>KTPLACE_SIMPL_DENSITY</code></td><td>SimPL</td><td>Target bin density.</td></tr>
+        <tr><td><code>KTPLACE_SIMPL_FENCES</code></td><td>SimPL</td><td><code>0</code> ignores fences, to see what the constraint costs.</td></tr>
+        <tr><td><code>KTPLACE_NTU_LEAF_CELLS</code></td><td>NTUPlace1</td><td>Stop partitioning once a region holds this many cells.</td></tr>
+        <tr><td><code>KTPLACE_ABACUS_MAX_ROW_DIST</code></td><td>Abacus</td><td>How many rows away a cell may be moved.</td></tr>
+        <tr><td><code>KTPLACE_DP_WINDOW</code></td><td>FastDP</td><td>Window size for detailed-placement moves.</td></tr>
+        <tr><td><code>KTPLACE_ANIM</code></td><td>Output</td><td><code>0</code> skips the GIF (frames and the final still are kept).</td></tr>
+        <tr><td><code>KTPLACE_FINAL_ZOOM</code></td><td>Output</td><td>Resolution of <code>final.png</code>.</td></tr>
+      </tbody>
+    </table></div>
+    <pre>KTPLACE_SIMPL_ITERS=25 KTPLACE_SIMPL_SEED=1 \
+    ktplace benchmark/ISPD_2005/adaptec1 -w output/adaptec1-25it</pre>
+    <p>The full list: <code>grep -rhoE 'KTPLACE_[A-Z0-9_]+' src | sort -u</code>.</p>
+  </section>
+</div>
+</body>
+</html>
