@@ -40,6 +40,24 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .pill.done    { background: rgba(63,188,125,.15); color: var(--ok);  border: 1px solid var(--ok); }
 .pill.failed  { background: rgba(229,82,76,.15); color: var(--bad); border: 1px solid var(--bad); }
 .pill.idle    { background: rgba(127,146,158,.12); color: var(--muted); border: 1px solid var(--line); }
+/* The bar fills by phase; the sheen sweeps only while the heartbeat says the
+   engine is working, so a run that has gone quiet freezes visibly. */
+#progress { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+#progress .bar { height: 8px; border-radius: 5px; background: #0d1216;
+  border: 1px solid var(--line); overflow: hidden; }
+#progress .fill { position: relative; height: 100%; width: 0; background: var(--accent);
+  transition: width .3s ease; }
+#progress .fill.done { background: var(--ok); }
+#progress .fill.failed { background: var(--bad); }
+#progress.live .fill::after { content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.3), transparent);
+  animation: sweep 1.5s linear infinite; }
+@keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+#progress .pline { display: flex; justify-content: space-between; gap: 12px;
+  margin-top: 7px; font-size: 12px; }
+#progress .stage { font-weight: 600; }
+#progress .beat { color: var(--muted); font: 11px/1.4 var(--mono); text-align: right; }
+#progress .beat.stalled { color: var(--bad); }
 #summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px; padding: 14px; }
 .stat { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: #0d1216; }
@@ -53,6 +71,11 @@ a:hover { text-decoration: underline; }
 #logwrap { padding: 0; }
 #log { margin: 0; padding: 12px 14px; height: 480px; overflow: auto; white-space: pre-wrap;
   font: 12px/1.45 var(--mono); color: #c9d4db; }
+#tracewrap { display: none; border-top: 1px solid var(--line); }
+#tracewrap .lbl { padding: 8px 14px 0; font-size: 11px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .5px; }
+#tracelog { margin: 0; padding: 8px 14px 12px; height: 300px; overflow: auto;
+  white-space: pre-wrap; font: 11px/1.45 var(--mono); color: #93a6b3; }
 #anim { padding: 0 14px 4px; }
 #anim .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase;
   letter-spacing: .5px; margin: 4px 0 8px; }
@@ -65,6 +88,53 @@ a:hover { text-decoration: underline; }
 #runs .rname { font-family: var(--mono); font-size: 12px; }
 #runs .rmeta { font-size: 11px; color: var(--muted); display: flex; gap: 8px; margin-top: 3px;
   align-items: center; }
+#runs .rbar { height: 4px; border-radius: 3px; background: #0d1216; overflow: hidden;
+  margin-top: 6px; }
+#runs .rbar i { display: block; height: 100%; background: var(--accent); }
+.mrow { display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 12px; margin: 10px 0 4px; }
+.mrow:first-child { margin-top: 0; }
+.mrow .mv { font-family: var(--mono); color: #fff; }
+.mbar { height: 6px; border-radius: 4px; background: #0d1216; border: 1px solid var(--line);
+  overflow: hidden; }
+.mbar .mfill { height: 100%; width: 0; background: var(--ok); transition: width .3s ease; }
+.mbar .mfill.warn { background: var(--run); }
+.mbar .mfill.hot { background: var(--bad); }
+textarea { width: 100%; padding: 7px 9px; background: #0d1216; color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px; font: 12px/1.4 var(--mono);
+  resize: vertical; }
+details { margin-top: 12px; }
+details summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+details[open] summary { margin-bottom: 8px; color: var(--text); }
+.hint button { padding: 3px 8px; font-size: 11px; margin-left: 4px; }
+.btnrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.btnrow button, .btnrow a.btn { padding: 5px 10px; font-size: 12px; border: 1px solid var(--line);
+  border-radius: 6px; background: #16202a; color: var(--text); text-decoration: none; }
+.btnrow a.btn:hover { background: #1d2b38; text-decoration: none; }
+#runs li { position: relative; }
+#runs .rdel { position: absolute; top: 5px; right: 6px; border: none; background: none;
+  color: var(--muted); font-size: 15px; line-height: 1; padding: 2px 6px; }
+#runs .rdel:hover { color: var(--bad); background: none; }
+#runs .rlbl { font-size: 11px; color: var(--accent); }
+#execrow { display: flex; gap: 6px; margin: 10px 0 0; }
+#execrow input { flex: 1; font-family: var(--mono); font-size: 12px; }
+#execrow button { padding: 7px 12px; }
+#execout { margin: 8px 0 0; padding: 8px 10px; height: 200px; overflow: auto;
+  white-space: pre-wrap; background: #0d1216; border: 1px solid var(--line);
+  border-radius: 6px; font: 11px/1.4 var(--mono); color: #b7c6d0; }
+#historysec { margin: 0 20px 20px; }
+#historysec table { width: 100%; border-collapse: collapse; font-size: 12px; }
+#historysec th, #historysec td { text-align: left; padding: 7px 10px;
+  border-bottom: 1px solid var(--line); vertical-align: top; }
+#historysec th { color: var(--muted); font-weight: 600; text-transform: uppercase;
+  font-size: 10px; letter-spacing: .5px; }
+#historysec tbody tr:hover { background: #161f27; }
+#historysec td.num { font-family: var(--mono); }
+#historysec .open { cursor: pointer; color: var(--accent); }
+#historysec .open:hover { text-decoration: underline; }
+#historysec .rmv { border: none; background: none; color: var(--muted); cursor: pointer;
+  font-size: 14px; }
+#historysec .rmv:hover { color: var(--bad); }
 footer { padding: 12px 20px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
 code { font-family: var(--mono); }
 #empty { color: var(--muted); padding: 20px; text-align: center; }
@@ -80,6 +150,8 @@ code { font-family: var(--mono); }
     <section>
       <h2>New run</h2>
       <div class="pad">
+        <label for="benchfilter">Filter designs</label>
+        <input type="text" id="benchfilter" placeholder="e.g. ibm01, adaptec, mgc_">
         <label for="bench">Benchmark (input directory)</label>
         <select id="bench"></select>
         <label for="alg">Algorithm</label>
@@ -87,16 +159,55 @@ code { font-family: var(--mono); }
           <option value="simpl">simpl (default)</option>
           <option value="ntuplace1">ntuplace1</option>
         </select>
-        <label><input type="checkbox" id="verbose" value="1"> verbose (trace log +
-        console diagnostics)</label>
+        <label><input type="checkbox" id="verbose" value="1"> verbose (also stream
+        the engine's trace log)</label>
+        <details id="adv">
+          <summary>Environment overrides</summary>
+          <label for="env">KTPLACE_* variables, <code>KEY=VALUE</code> per line</label>
+          <textarea id="env" rows="4" spellcheck="false"
+            placeholder="KTPLACE_SIMPL_ITERS=25&#10;KTPLACE_SIMPL_SEED=1"></textarea>
+          <div class="hint">
+            The engine tunes from the environment, not flags.
+            <button type="button" id="presetfast">quick test</button>
+            <button type="button" id="presetclear">clear</button>
+          </div>
+        </details>
         <div style="margin-top:12px"><button class="primary" id="runbtn">Run placement</button></div>
         <div class="hint" id="benchnote"></div>
+      </div>
+    </section>
+    <section style="margin-top:16px">
+      <h2>Machine</h2>
+      <div class="pad" id="machine">
+        <div class="mrow"><span>CPU</span><span class="mv" id="mcpu">—</span></div>
+        <div class="mbar"><div class="mfill" id="mcpu-bar"></div></div>
+        <div class="mrow"><span>Memory</span><span class="mv" id="mmem">—</span></div>
+        <div class="mbar"><div class="mfill" id="mmem-bar"></div></div>
+        <div class="hint" id="mnote"></div>
       </div>
     </section>
     <section style="margin-top:16px">
       <h2>Runs</h2>
       <ul id="runs"></ul>
       <div id="empty">No runs yet.</div>
+    </section>
+    <section style="margin-top:16px">
+      <h2>Terminal</h2>
+      <div class="pad">
+        <div class="hint" style="margin-top:0">Commands run in the console container
+          (python3 and the engine; no compiler &mdash; build in the dev container).
+          Relative paths start at <code>/ktplace</code>.</div>
+        <div id="execrow">
+          <input type="text" id="execcmd" placeholder="ktplace benchmark/ISPD_2005/adaptec1 -w /ktplace/runs/tmp"
+                 spellcheck="false">
+          <button class="primary" id="execrun">Run</button>
+        </div>
+        <pre id="execout" tabindex="0"></pre>
+        <div class="btnrow">
+          <button id="execstop">Stop</button>
+          <span class="hint" id="execmeta" style="margin:0"></span>
+        </div>
+      </div>
     </section>
   </div>
 
@@ -107,28 +218,56 @@ code { font-family: var(--mono); }
         <span class="pill idle" id="statepill">—</span>
         <span id="runmeta" style="color:var(--muted);font-size:12px"></span>
       </div>
+      <div id="progress">
+        <div class="bar"><div class="fill" id="pbar"></div></div>
+        <div class="pline">
+          <span class="stage" id="pstage">—</span>
+          <span class="beat" id="pbeat"></span>
+        </div>
+      </div>
       <div id="summary"></div>
       <div id="anim"></div>
       <div id="artifacts"></div>
+      <div id="exports" class="btnrow" style="padding:0 14px 12px"></div>
       <div id="logwrap"><pre id="log" tabindex="0"></pre></div>
+      <div id="tracewrap">
+        <div class="lbl">Trace log &mdash; the engine's per-iteration diagnostics
+          (<code>ktplace_trace.log</code>)</div>
+        <pre id="tracelog" tabindex="0"></pre>
+      </div>
     </section>
   </div>
 </main>
+
+<section id="historysec">
+  <h2>Run history</h2>
+  <table>
+    <thead>
+      <tr><th>Run</th><th>Design</th><th>Algo</th><th>Status</th><th>Elapsed</th>
+          <th>HPWL</th><th>Verdict</th><th>Env</th><th></th></tr>
+    </thead>
+    <tbody id="history"></tbody>
+  </table>
+</section>
 <footer>
   Everything runs in the container; ktplace is invoked with
   <code>&lt;design&gt; -a &lt;algorithm&gt; -w runs/&lt;id&gt;</code>. The gallery,
   final image and transcripts are the engine's own output, served from the run
-  directory.
+  directory; the progress bar and machine panel are read from the transcript,
+  the frames the engine streams, and the container's own <code>/proc</code>.
 </footer>
 
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
 const logEl = $("log");
+const traceEl = $("tracelog");
 let current = null;       // run id being watched
 let pollTimer = null;
 let runsListTimer = null;
 let stick = true;         // autoscroll while the user is at the bottom
+let stickTrace = true;
+let showTrace = false;    // set from the run's verbose flag
 
 const ansi = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
 
@@ -151,29 +290,70 @@ function fmtElapsed(s) {
   const m = Math.floor(s / 60), r = Math.round(s % 60);
   return m ? `${m}m ${r}s` : `${r}s`;
 }
+function fmtBytes(n) {
+  if (n == null) return "—";
+  return n >= 1e9 ? (n / 1e9).toFixed(1) + " GB" : Math.round(n / 1e6) + " MB";
+}
+function fmtMB(mb) {
+  if (mb == null) return "—";
+  return mb >= 1024 ? (mb / 1024).toFixed(1) + " GB" : Math.round(mb) + " MB";
+}
 
 // ---------------------------------------------------------------- form
+let allDesigns = [];
+
+// The full suite is large (ISPD_2015 alone is ~20 designs), so the select is
+// rebuilt from a filter rather than scanned by eye.
+function renderBenchOptions() {
+  const filter = $("benchfilter").value.trim().toLowerCase();
+  const sel = $("bench"), keep = sel.value;
+  sel.innerHTML = "";
+  const shown = allDesigns.filter((d) => !filter || d.toLowerCase().includes(filter));
+  for (const d of shown) {
+    const o = document.createElement("option");
+    o.value = d; o.textContent = d;
+    sel.appendChild(o);
+  }
+  if (!shown.length) sel.innerHTML = '<option value="">(no match)</option>';
+  else if (shown.includes(keep)) sel.value = keep;
+  $("benchnote").textContent = filter
+    ? `${shown.length} of ${allDesigns.length} designs match “${filter}”`
+    : `${allDesigns.length} design(s)`;
+  return shown;
+}
+
 async function loadBenchmarks() {
   try {
     const data = await api("/api/benchmarks");
-    const sel = $("bench"), note = $("benchnote");
-    sel.innerHTML = "";
-    if (!data.designs.length) {
-      sel.innerHTML = '<option value="">(none found)</option>';
-      note.textContent = "No design directories found under " + data.root +
+    allDesigns = data.designs;
+    if (!allDesigns.length) {
+      $("bench").innerHTML = '<option value="">(none found)</option>';
+      $("benchnote").textContent = "No design directories found under " + data.root +
         ". Mount a benchmark directory into the container.";
       return;
     }
-    for (const d of data.designs) {
-      const o = document.createElement("option");
-      o.value = d; o.textContent = d;
-      sel.appendChild(o);
-    }
-    const fav = data.designs.find((d) => d.includes("adaptec1"))
-              || data.designs.find((d) => d.toLowerCase().includes("ibm01"));
-    if (fav) sel.value = fav;
-    note.textContent = `Serving ${data.designs.length} design(s) from ` + data.root;
+    const shown = renderBenchOptions();
+    // Prefer a small, quick design as the default so the button does something
+    // useful before the user has thought about it.
+    const fav = allDesigns.find((d) => d.includes("adaptec1"))
+              || allDesigns.find((d) => d.toLowerCase().includes("ibm01"));
+    if (fav && shown.includes(fav)) $("bench").value = fav;
+    $("benchnote").textContent = `Serving ${allDesigns.length} design(s) from ` + data.root;
   } catch (e) { $("benchnote").textContent = "Could not list benchmarks: " + e.message; }
+}
+
+// The engine takes its tuning from KTPLACE_* environment variables, not flags,
+// so the free-text box is KEY=VALUE lines; the server re-validates each one.
+function envOverrides() {
+  const out = {};
+  for (const raw of $("env").value.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const i = line.indexOf("=");
+    if (i < 1) continue;
+    out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  return out;
 }
 
 async function submitRun() {
@@ -184,6 +364,7 @@ async function submitRun() {
       benchmark: $("bench").value,
       algorithm: $("alg").value,
       verbose: $("verbose").checked,
+      env: envOverrides(),
     };
     if (!body.benchmark) throw new Error("choose a benchmark");
     const run = await api("/api/runs", {
@@ -204,18 +385,28 @@ async function refreshRuns() {
     const data = await api("/api/runs");
     $("runs").innerHTML = "";
     $("empty").style.display = data.runs.length ? "none" : "block";
-    const root = window.location.pathname.replace(/\/+$/, "");
     for (const r of data.runs) {
       const li = document.createElement("li");
       if (r.id === current) li.className = "active";
       li.innerHTML =
-        `<div class="rname">${esc(r.id)}</div>` +
+        `<div class="rname">${esc(r.id)}` +
+        (r.label ? ` <span class="rlbl">${esc(r.label)}</span>` : "") + `</div>` +
         `<div class="rmeta"><span class="pill ${esc(r.status)}">${esc(r.status)}</span>` +
         `<span>${esc(r.benchmark)}</span><span>${esc(r.algorithm)}</span>` +
-        `<span>${fmtElapsed(r.elapsed)}</span></div>`;
+        `<span>${fmtElapsed(r.elapsed)}</span></div>` +
+        // A fill under each run: the watched one is live, the rest keep the
+        // fraction they finished at.
+        (r.status === "running" || r.progress > 0
+          ? `<div class="rbar"><i style="width:${Math.round((r.progress || 0) * 100)}%"></i></div>`
+          : "");
+      const del = document.createElement("button");
+      del.className = "rdel"; del.textContent = "✕"; del.title = "Delete this run";
+      del.onclick = (ev) => { ev.stopPropagation(); deleteRun(r.id, r.status); };
+      li.appendChild(del);
       li.onclick = () => selectRun(r.id);
       $("runs").appendChild(li);
     }
+    renderHistory(data.runs);
     if (data.running >= data.maxConcurrent) {
       $("runbtn").disabled = true;
       $("runbtn").textContent = "Run placement (one run at a time)";
@@ -226,32 +417,106 @@ async function refreshRuns() {
   } catch (e) { /* harness offscreen; the list refreshes again shortly */ }
 }
 
+// The headline numbers of every run, side by side. summary() is cached
+// server-side once a run stops, so asking for the whole history each poll is
+// cheap.
+function renderHistory(runs) {
+  const tb = $("history");
+  tb.innerHTML = "";
+  if (!runs.length) {
+    tb.innerHTML = '<tr><td colspan="9" style="color:var(--muted)">No runs yet.</td></tr>';
+    return;
+  }
+  for (const r of runs) {
+    const s = r.summary || {};
+    const envKeys = Object.keys(r.env || {});
+    const envTip = envKeys.map((k) => k + "=" + r.env[k]).join("\n");
+    const elapsed = r.status === "running"
+      ? fmtElapsed(r.elapsed) + "…" : fmtElapsed(r.elapsed);
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td class="open" title="${esc(r.id)}">${esc(r.label || r.id)}</td>` +
+      `<td>${esc(r.benchmark)}</td>` +
+      `<td>${esc(r.algorithm)}</td>` +
+      `<td><span class="pill ${esc(r.status)}">${esc(r.status)}</span></td>` +
+      `<td class="num">${esc(elapsed)}</td>` +
+      `<td class="num">${esc(s.hpwl || "—")}</td>` +
+      `<td>${esc(s.verdict || "—")}</td>` +
+      `<td class="num" title="${esc(envTip)}">${envKeys.length ? envKeys.length + " set" : "—"}</td>` +
+      `<td><button class="rmv" title="Delete this run">✕</button></td>`;
+    tr.querySelector("td.open").onclick = () => selectRun(r.id);
+    tr.querySelector(".rmv").onclick = () => deleteRun(r.id, r.status);
+    tb.appendChild(tr);
+  }
+}
+
+async function deleteRun(id, status) {
+  const verb = status === "running" ? "Stop and delete" : "Delete";
+  if (!confirm(`${verb} run ${id}? Its directory is removed.`)) return;
+  try {
+    await api(`/api/runs/${id}`, {method: "DELETE"});
+    if (id === current) {
+      current = null;
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+    refreshRuns();
+  } catch (e) { alert(e.message); }
+}
+
+async function renameRun(run) {
+  const label = prompt("Label for this run (blank to clear)", run.label || "");
+  if (label == null) return;
+  try {
+    const updated = await api(`/api/runs/${run.id}/label`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({label}),
+    });
+    renderDetail(updated);
+    refreshRuns();
+  } catch (e) { alert(e.message); }
+}
+
 function selectRun(id) {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   current = id;
+  showTrace = false;
   logEl.textContent = "";
+  traceEl.textContent = "";
+  $("tracewrap").style.display = "none";
   $("runmeta").textContent = "";
   $("artifacts").innerHTML = "";
   $("summary").innerHTML = "";
   $("anim").innerHTML = "";
+  $("exports").innerHTML = "";
   $("statepill").className = "pill idle";
   $("statepill").textContent = "…";
+  renderProgress({label: "starting", fraction: 0}, null, "running", 0);
   poll(id);
   refreshRuns();
 }
 
 async function poll(id) {
   if (id !== current) return;
-  let offset = 0;
-  let done = false;
+  const offsets = {log: 0, trace: 0};
+
+  // One stream per call; the server answers for whichever the run has. Both
+  // ride the same tick so the trace pane keeps up with the transcript.
+  const pull = async (el, stream, sticks) => {
+    const data = await api(`/api/runs/${id}/log?offset=${offsets[stream]}&stream=${stream}`);
+    if (data.offset > offsets[stream]) {
+      el.textContent += ansi(data.text);
+      offsets[stream] = data.offset;
+      if (sticks) el.scrollTop = el.scrollHeight;
+    }
+    return data;
+  };
+
   const tick = async () => {
     try {
-      const data = await api(`/api/runs/${id}/log?offset=${offset}`);
-      if (data.offset > offset) {
-        logEl.textContent += ansi(data.text);
-        offset = data.offset;
-        if (stick) logEl.scrollTop = logEl.scrollHeight;
-      }
+      const data = await pull(logEl, "log", stick);
+      renderProgress(data.progress, data.heartbeat,
+                     data.heartbeat && data.heartbeat.state, data.elapsed);
+      if (showTrace) await pull(traceEl, "trace", stickTrace);
       if (data.done) {        // finished: one final state fetch and stop
         clearInterval(pollTimer); pollTimer = null;
         const run = await api(`/api/runs/${id}`);
@@ -263,18 +528,110 @@ async function poll(id) {
       // run torn down mid-poll; retry then give up
     }
   };
-  renderDetail((await api(`/api/runs/${id}`)));
+
+  const run = await api(`/api/runs/${id}`);
+  showTrace = !!run.verbose;
+  renderDetail(run);
   await tick();
   pollTimer = setInterval(tick, 700);
+}
+
+// The bar fills by phase; the sweep only moves while the heartbeat says the
+// engine is working, so a stalled run is visible as a frozen bar, not just a
+// quiet log. The beat line underneath carries the numbers that make it concrete.
+function renderProgress(progress, heartbeat, status, elapsed) {
+  if (progress == null) return;
+  if (typeof progress === "number") progress = {fraction: progress, label: ""};
+  const fill = $("pbar");
+  const frac = Math.max(0, Math.min(1, progress.fraction || 0));
+  fill.style.width = (frac * 100).toFixed(1) + "%";
+  fill.className = "fill" + (status === "done" ? " done"
+                             : status === "failed" ? " failed" : "");
+  const beat = $("pbeat");
+  if (progress.label) $("pstage").textContent = progress.label;
+
+  // The heartbeat is only meaningful while the engine is alive; for a finished
+  // run the elapsed time is the whole story.
+  const finished = status === "done" || status === "failed";
+  const bits = [];
+  if (!finished) {
+    if (heartbeat && heartbeat.logAge != null)
+      bits.push(`output ${fmtElapsed(heartbeat.logAge)} ago`);
+    if (heartbeat && heartbeat.framesPer)
+      bits.push(`${heartbeat.framesPer}/s frames`);
+    if (heartbeat && heartbeat.cpuPercent != null)
+      bits.push(`CPU ${heartbeat.cpuPercent}%`);
+    if (heartbeat && heartbeat.rssMB != null)
+      bits.push(`RSS ${fmtMB(heartbeat.rssMB)}`);
+  } else if (heartbeat && heartbeat.frames) {
+    bits.push(`${heartbeat.frames} frames`);
+  }
+  if (elapsed != null) bits.push(fmtElapsed(elapsed));
+  const stalled = !finished && heartbeat && heartbeat.state === "stalled";
+  if (stalled) bits.unshift("no progress");
+  beat.textContent = bits.join(" · ");
+  beat.className = "beat" + (stalled ? " stalled" : "");
+  $("progress").className =
+    !finished && heartbeat && heartbeat.state === "working" ? "live" : "";
+}
+
+// ------------------------------------------------------------- machine
+function setMBar(el, pct) {
+  pct = Math.max(0, Math.min(100, pct || 0));
+  el.style.width = pct.toFixed(1) + "%";
+  el.className = "mfill" + (pct >= 85 ? " hot" : pct >= 65 ? " warn" : "");
+}
+
+function renderMachine(s) {
+  if (!s || !s.cpu) return;
+  const cores = s.cpu.cores || 1;
+  const usage = s.cpu.usagePercent;
+  const l1 = s.cpu.load ? s.cpu.load[0] : null;
+  $("mcpu").textContent =
+    `${cores} core${cores > 1 ? "s" : ""}` +
+    (usage == null ? "" : ` · ${usage}% busy`) +
+    (l1 == null ? "" : ` · load ${l1.toFixed(2)}`);
+  setMBar($("mcpu-bar"), usage == null ? (l1 == null ? 0 : 100 * l1 / cores) : usage);
+
+  const m = s.mem || {};
+  const total = m.totalBytes || 0, used = m.usedBytes || 0;
+  const pct = total ? 100 * used / total : 0;
+  let line = `${fmtBytes(used)} / ${fmtBytes(total)}`;
+  if (m.limitBytes && total && m.limitBytes < total)
+    line += ` (cap ${fmtBytes(m.limitBytes)})`;
+  $("mmem").textContent = line;
+  setMBar($("mmem-bar"), pct);
+
+  // The solver is CPU-bound and memory-hungry, so say when either is the thing
+  // standing between the run and its normal speed.
+  const notes = [];
+  if (pct >= 85) notes.push("memory nearly full — the solver will slow down and may swap");
+  else if (pct >= 70) notes.push("memory filling up");
+  if (l1 != null && l1 > cores * 0.9) notes.push("CPU saturated; concurrent work shares the cores");
+  if (m.swapUsedBytes > 0) notes.push(`swapping ${fmtBytes(m.swapUsedBytes)}`);
+  $("mnote").textContent = notes.join("; ") ||
+    "The engine is CPU-bound; spare cores and free memory are what a run wants.";
+}
+
+async function refreshMachine() {
+  try { renderMachine(await api("/api/system")); } catch (e) { /* server rebooting */ }
 }
 
 function renderDetail(run) {
   const pill = $("statepill");
   pill.className = "pill " + run.status;
   pill.textContent = run.status + (run.exitCode == null ? "" : ` (exit ${run.exitCode})`);
-  $("runmeta").textContent =
-    `${fmtTime(run.started)} · ${run.benchmark} · ${run.algorithm}` +
-    (run.verbose ? " · verbose" : "") + ` · ${fmtElapsed(run.elapsed)}`;
+  const envKeys = Object.keys(run.env || {});
+  const envTip = envKeys.map((k) => k + "=" + run.env[k]).join("\n");
+  $("runmeta").innerHTML =
+    esc(`${fmtTime(run.started)} · ${run.benchmark} · ${run.algorithm}` +
+        (run.verbose ? " · verbose" : "") + ` · ${fmtElapsed(run.elapsed)}` +
+        (envKeys.length ? ` · ${envKeys.length} env override${envKeys.length > 1 ? "s" : ""}` : "")) +
+    (envKeys.length ? ` <span title="${esc(envTip)}" style="cursor:help">ⓘ</span>` : "") +
+    ` · <a href="#" id="renamelink">rename</a>`;
+  $("renamelink").onclick = (ev) => { ev.preventDefault(); renameRun(run); };
+  $("tracewrap").style.display = run.verbose ? "block" : "none";
+  renderProgress(run.progress, run.heartbeat, run.status, run.elapsed);
 
   const sum = $("summary");
   sum.innerHTML = "";
@@ -306,6 +663,25 @@ function renderDetail(run) {
     }
   }
 
+  // Downloads. The transcript and trace are usually what people want to keep,
+  // so they get one click each; the archive bundles everything textual plus the
+  // final image, without the (potentially huge) frame gallery.
+  const exp = $("exports");
+  exp.innerHTML = "";
+  for (const [title, what] of [["transcript", "log"], ["trace", "trace"],
+                               ["placed.pl", "placed"], ["request.json", "request"]]) {
+    const a = document.createElement("a");
+    a.className = "btn"; a.textContent = "↓ " + title;
+    a.href = `/api/runs/${run.id}/download?what=${what}`;
+    a.setAttribute("download", "");
+    exp.appendChild(a);
+  }
+  const all = document.createElement("a");
+  all.className = "btn"; all.textContent = "↓ everything (.zip)";
+  all.href = `/api/runs/${run.id}/download?what=all`;
+  all.setAttribute("download", "");
+  exp.appendChild(all);
+
   const art = $("artifacts");
   art.innerHTML = "";
   if (run.artifacts && run.artifacts.length) {
@@ -320,14 +696,82 @@ function renderDetail(run) {
   }
 }
 
+// ------------------------------------------------------------- terminal
+// One-shot commands, streamed by polling the same way a run's transcript is.
+// No PTY: interactive programs (an editor, `top`) will not behave, which is
+// what the hint in the panel says.
+let execId = null, execTimer = null, execOffset = 0;
+
+async function runCommand() {
+  const cmd = $("execcmd").value.trim();
+  if (!cmd) return;
+  if (execTimer) { clearInterval(execTimer); execTimer = null; }
+  $("execout").textContent = "";
+  $("execmeta").textContent = "starting…";
+  execOffset = 0; execId = null;
+  try {
+    const ex = await api("/api/exec", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({cmd}),
+    });
+    execId = ex.id;
+    $("execmeta").textContent = "running · " + cmd;
+    execTimer = setInterval(pollExec, 600);
+  } catch (e) {
+    $("execout").textContent = "error: " + e.message + "\n";
+    $("execmeta").textContent = "";
+  }
+}
+
+async function pollExec() {
+  if (!execId) return;
+  try {
+    const data = await api(`/api/exec/${execId}?offset=${execOffset}`);
+    if (data.text) {
+      const out = $("execout");
+      out.textContent += data.text;
+      execOffset = data.offset;
+      out.scrollTop = out.scrollHeight;
+    }
+    const bits = [data.status, fmtElapsed(data.elapsed)];
+    if (data.exitCode != null) bits.push(`exit ${data.exitCode}`);
+    $("execmeta").textContent = bits.join(" · ");
+    if (data.done) { clearInterval(execTimer); execTimer = null; }
+  } catch (e) {
+    $("execmeta").textContent = "lost the command: " + e.message;
+    clearInterval(execTimer); execTimer = null;
+  }
+}
+
+async function stopCommand() {
+  if (!execId) return;
+  try { await api(`/api/exec/${execId}`, {method: "DELETE"}); }
+  catch (e) { /* already gone */ }
+}
+
 // ---------------------------------------------------------------- boot
 logEl.addEventListener("scroll", () => {
   stick = logEl.scrollTop + logEl.clientHeight > logEl.scrollHeight - 60;
 });
+traceEl.addEventListener("scroll", () => {
+  stickTrace = traceEl.scrollTop + traceEl.clientHeight > traceEl.scrollHeight - 60;
+});
 $("runbtn").onclick = submitRun;
+$("benchfilter").addEventListener("input", renderBenchOptions);
+$("presetfast").onclick = () => {
+  $("env").value = "KTPLACE_SIMPL_ITERS=25\nKTPLACE_SIMPL_TRACE_EVERY=0\nKTPLACE_SIMPL_CG_EVERY=0\n";
+};
+$("presetclear").onclick = () => { $("env").value = ""; };
+$("execrun").onclick = runCommand;
+$("execstop").onclick = stopCommand;
+$("execcmd").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); runCommand(); }
+});
 loadBenchmarks();
 refreshRuns();
+refreshMachine();
 runsListTimer = setInterval(refreshRuns, 5000);
+setInterval(refreshMachine, 2000);
 </script>
 </body>
 </html>
