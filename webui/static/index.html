@@ -16,8 +16,14 @@
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 body { margin: 0; background: var(--bg); color: var(--text);
   font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-header { display: flex; align-items: baseline; gap: 14px; padding: 14px 20px;
-  border-bottom: 1px solid var(--line); }
+/* The title bar stays put while the page scrolls, so the guide link and the
+   live status are always one glance away. */
+header { position: sticky; top: 0; z-index: 20; display: flex; align-items: center;
+  flex-wrap: wrap; gap: 4px 14px; padding: 12px 20px; border-bottom: 1px solid var(--line);
+  background: rgba(11, 15, 18, .92); backdrop-filter: blur(6px); }
+header nav { margin-left: auto; display: flex; gap: 14px; align-items: center; font-size: 13px; }
+header .live { font-size: 12px; color: var(--muted); }
+header .live.on { color: var(--run); }
 header h1 { margin: 0; font-size: 17px; color: #fff; letter-spacing: .3px; }
 header .sub { color: var(--muted); font-size: 12px; }
 main { display: grid; grid-template-columns: 320px 1fr; gap: 16px; padding: 16px 20px; }
@@ -79,9 +85,25 @@ a:hover { text-decoration: underline; }
   color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
 #tracelog { margin: 0; padding: 8px 14px 12px; height: 300px; overflow: auto;
   white-space: pre-wrap; font: 11px/1.45 var(--mono); color: #93a6b3; }
-#anim { padding: 0 14px 4px; }
-#anim .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase;
-  letter-spacing: .5px; margin: 4px 0 8px; }
+/* Run / Animated placement: tabs in the heading row. The status and progress
+   lines stay above them; clicking the open tab folds its panel. */
+#detailtabs { display: flex; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--line);
+  /* Pinned under the title bar, so folding or switching is reachable from deep
+     in a long transcript; --header-h follows the header as it wraps. */
+  position: sticky; top: var(--header-h, 51px); z-index: 10; background: var(--panel);
+  border-radius: 8px 8px 0 0; }
+#detailtabs button { background: none; border: 0; border-bottom: 2px solid transparent;
+  border-radius: 0; margin-bottom: -1px; padding: 10px 8px; font-size: 12px; letter-spacing: 1px;
+  text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+#detailtabs button:hover:not(:disabled) { color: var(--text); }
+#detailtabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+#detailtabs .chev { display: inline-block; width: 10px; font-size: 10px; transition: transform .15s; }
+#detailtabs button[aria-expanded="false"] .chev { transform: rotate(-90deg); }
+#detailtabs button[aria-selected="false"] .chev { visibility: hidden; }
+#detailtabs .count { font-size: 10px; letter-spacing: 0; text-transform: none; }
+#anim { padding: 14px 14px 10px; }
+#anim .empty { color: var(--muted); font-size: 12px; text-align: center; padding: 24px 0; }
+#anim .caption { font-size: 11px; color: var(--muted); text-align: center; margin-top: 8px; }
 /* The finished gif is square and can run to tens of MB; cap its height so it
    does not dominate the page, and reserve the square box so the page does not
    jump while it loads. */
@@ -156,6 +178,10 @@ code { font-family: var(--mono); }
 <header>
   <h1>KTPlace web console</h1>
   <span class="sub">run the placement engine, watch it work, review what it wrote</span>
+  <nav>
+    <span class="live" id="livecount" aria-live="polite"></span>
+    <a href="/guide">How it works</a>
+  </nav>
 </header>
 <main>
   <div>
@@ -225,7 +251,13 @@ code { font-family: var(--mono); }
 
   <div>
     <section id="detail"> <!-- populated by JS -->
-      <h2>Run</h2>
+      <div id="detailtabs" role="tablist" aria-label="Run detail">
+        <button role="tab" id="tab-run" aria-controls="panel-run" aria-selected="true"
+                aria-expanded="true"><span class="chev" aria-hidden="true">▾</span>Run</button>
+        <button role="tab" id="tab-anim" aria-controls="panel-anim" aria-selected="false"
+                aria-expanded="true" tabindex="-1" disabled><span class="chev" aria-hidden="true">▾</span>Animated
+          placement <span class="count" id="animnote"></span></button>
+      </div>
       <div id="statusline">
         <span class="pill idle" id="statepill">—</span>
         <span id="runmeta" style="color:var(--muted);font-size:12px"></span>
@@ -238,8 +270,8 @@ code { font-family: var(--mono); }
           <span class="beat" id="pbeat"></span>
         </div>
       </div>
+      <div id="panel-run" role="tabpanel" aria-labelledby="tab-run">
       <div id="summary"></div>
-      <div id="anim"></div>
       <div id="artifacts"></div>
       <div id="exports" class="btnrow" style="padding:0 14px 12px"></div>
       <div id="logwrap">
@@ -251,6 +283,10 @@ code { font-family: var(--mono); }
         <div class="lbl">Trace log &mdash; the engine's per-iteration diagnostics
           (<code>ktplace_trace.log</code>)</div>
         <pre id="tracelog" tabindex="0" aria-label="Run trace log"></pre>
+      </div>
+      </div>
+      <div id="panel-anim" role="tabpanel" aria-labelledby="tab-anim" hidden>
+        <div id="anim"></div>
       </div>
     </section>
   </div>
@@ -282,6 +318,77 @@ code { font-family: var(--mono); }
 const $ = (id) => document.getElementById(id);
 const logEl = $("log");
 const traceEl = $("tracelog");
+
+// Run / Animated placement tabs. Which tab is open and whether it is folded is
+// a per-viewer preference, so it is remembered in localStorage when it can be.
+const TABS = {run: ["tab-run", "panel-run"], anim: ["tab-anim", "panel-anim"]};
+let tabState = {tab: "run", folded: false};
+try { Object.assign(tabState, JSON.parse(localStorage.getItem("ktplace.tabs") || "{}")); }
+catch (e) { /* storage blocked: defaults */ }
+let animSrc = null;   // the current run's GIF, loaded only once its tab is open
+
+function applyTabs() {
+  if (tabState.tab === "anim" && !animSrc) tabState.tab = "run";  // nothing to show
+  for (const [name, [tabId, panelId]] of Object.entries(TABS)) {
+    const on = name === tabState.tab;
+    const tab = $(tabId);
+    tab.setAttribute("aria-selected", on);
+    tab.setAttribute("aria-expanded", on && !tabState.folded);
+    tab.tabIndex = on ? 0 : -1;
+    tab.title = tab.disabled ? (tab.dataset.why || "") : on ? (tabState.folded ? "Expand" : "Fold") : "";
+    $(panelId).hidden = !on || tabState.folded;
+  }
+  // Assigning src only now keeps a multi-MB GIF from downloading while it is
+  // out of sight.
+  const img = $("anim").querySelector("img");
+  if (img && !$("panel-anim").hidden && !img.getAttribute("src")) img.src = img.dataset.src;
+}
+
+function selectTab(name) {
+  // The open tab toggles its panel; another tab opens expanded.
+  if (name === tabState.tab) tabState.folded = !tabState.folded;
+  else tabState = {tab: name, folded: false};
+  try { localStorage.setItem("ktplace.tabs", JSON.stringify(tabState)); } catch (e) {}
+  applyTabs();
+}
+
+function setAnimation(src, status) {
+  const tab = $("tab-anim");
+  if (src !== animSrc) {
+    animSrc = src;
+    $("anim").innerHTML = src
+      ? `<img data-src="${esc(src)}" alt="Animated placement of this run">` +
+        `<div class="caption"><a href="${esc(src)}" target="_blank" rel="noopener">open full size</a></div>`
+      : "";
+  }
+  tab.disabled = !src;
+  $("animnote").textContent = src ? "" : (status === "running" ? "(after the run)" : "(none)");
+  tab.dataset.why = src ? "" : "No animation for this run (KTPLACE_ANIM=0, --no-plots, or still running)";
+  applyTabs();
+}
+
+for (const [name, [tabId]] of Object.entries(TABS)) {
+  $(tabId).addEventListener("click", () => selectTab(name));
+}
+// Arrow keys move between tabs, as for any tablist.
+$("detailtabs").addEventListener("keydown", (ev) => {
+  if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+  const names = Object.keys(TABS).filter((n) => !$(TABS[n][0]).disabled);
+  const i = names.indexOf(tabState.tab);
+  const next = names[(i + (ev.key === "ArrowRight" ? 1 : names.length - 1)) % names.length];
+  if (next && next !== tabState.tab) { selectTab(next); $(TABS[next][0]).focus(); }
+  ev.preventDefault();
+});
+applyTabs();
+
+// Keep --header-h equal to the title bar's real height (it wraps on phones).
+{
+  const header = document.querySelector("header");
+  const setHeaderH = () =>
+    document.documentElement.style.setProperty("--header-h", header.offsetHeight + "px");
+  setHeaderH();
+  if (window.ResizeObserver) new ResizeObserver(setHeaderH).observe(header);
+}
 let current = null;       // run id being watched
 let pollTimer = null;
 let runsListTimer = null;
@@ -415,6 +522,9 @@ async function submitRun() {
 async function refreshRuns() {
   try {
     const data = await api("/api/runs");
+    const live = $("livecount");
+    live.textContent = data.running ? `● ${data.running} running` : "idle";
+    live.className = "live" + (data.running ? " on" : "");
     $("runs").innerHTML = "";
     $("empty").style.display = data.runs.length ? "none" : "block";
     for (const r of data.runs) {
@@ -519,7 +629,7 @@ function selectRun(id) {
   $("runmeta").textContent = "";
   $("artifacts").innerHTML = "";
   $("summary").innerHTML = "";
-  $("anim").innerHTML = "";
+  setAnimation(null);
   $("exports").innerHTML = "";
   $("statepill").className = "pill idle";
   $("statepill").textContent = "…";
@@ -695,7 +805,7 @@ function renderDetail(run) {
       const raw = String(run.summary[k]);
       let color = "#fff";
       if (k === "verdict") color = raw.toLowerCase() === "pass" ? "var(--ok)" : "var(--bad)";
-      else if (zeroGood[k]) color = Number(raw) === 0 ? "var(--ok)" : "var(--bad)";
+      else if (zeroGood[k] && /^\d+$/.test(raw)) color = Number(raw) === 0 ? "var(--ok)" : "var(--bad)";
       const text = /^\d+$/.test(raw) ? Number(raw).toLocaleString() : raw;
       const d = document.createElement("div");
       d.className = "stat";
@@ -704,21 +814,10 @@ function renderDetail(run) {
     }
   }
 
-  // The animation is the run's showpiece: embed it on the page instead of
-  // hiding it behind a link. Lazy-loaded because a full run's GIF runs to
-  // tens of megabytes.
-  const anim = $("anim");
-  anim.innerHTML = "";
-  if (run.artifacts) {
-    const gif = run.artifacts.find((a) => a.rel.toLowerCase().endsWith(".gif"));
-    if (gif) {
-      const caption = gif.title && gif.title.toLowerCase() !== "animation"
-        ? ` &mdash; ${esc(gif.title)}` : "";
-      anim.innerHTML =
-        `<div class="lbl">Animated placement${caption}</div>` +
-        `<img src="/runs/${run.id}/${gif.rel}" alt="animated placement run" loading="lazy">`;
-    }
-  }
+  // The animation gets its own tab rather than sitting between the stats and
+  // the logs: a full run's GIF is tall and can run to tens of megabytes.
+  const gif = (run.artifacts || []).find((a) => a.rel.toLowerCase().endsWith(".gif"));
+  setAnimation(gif ? `/runs/${run.id}/${gif.rel}` : null, run.status);
 
   // Downloads. The transcript and trace are usually what people want to keep,
   // so they get one click each; the archive bundles everything textual plus the
