@@ -617,9 +617,15 @@ void SimplePlacer::Impl::buildGrid(const SimplParams &P) {
                 continue;
             }
             const double ry1 = ri.coordinate + ri.height;
-            std::size_t iy0, iy1, dummy;
-            grid_.locate(ri.coordinate, ry1, iy0, iy1);
-            (void)dummy;
+            // locate() takes a point (x, y) and returns (ix, iy), so the row's two
+            // y bounds go in as the y of two points. Passing them as (x, y) of one
+            // point binned the bottom edge along x: on a square die with x0 == y0
+            // (adaptec1) that is the same number, which hid it; on
+            // mgc_superblue16_a it left 158 of 13225 bins with any capacity, a
+            // "utilisation" of 6104%, and a spreading that could never converge.
+            std::size_t iy0, iy1, unusedX;
+            grid_.locate(grid_.x0, ri.coordinate, unusedX, iy0);
+            grid_.locate(grid_.x0, ry1, unusedX, iy1);
             for (std::size_t iy = iy0; iy <= iy1 && iy < grid_.nby; ++iy) {
                 const double bLo = grid_.binLoY(iy);
                 const double bHi = bLo + grid_.dy;
@@ -631,8 +637,9 @@ void SimplePlacer::Impl::buildGrid(const SimplParams &P) {
                     if (!(si.xhi(ri.pitch()) > si.xlo())) {
                         continue;
                     }
-                    std::size_t ix0, ix1;
-                    grid_.locate(si.xlo(), si.xhi(ri.pitch()), ix0, ix1);
+                    std::size_t ix0, ix1, unusedY;
+                    grid_.locate(si.xlo(), grid_.y0, ix0, unusedY);
+                    grid_.locate(si.xhi(ri.pitch()), grid_.y0, ix1, unusedY);
                     for (std::size_t ix = ix0; ix <= ix1 && ix < grid_.nbx; ++ix) {
                         const double xLo = grid_.binLoX(ix);
                         const double xHi = xLo + grid_.dx;
