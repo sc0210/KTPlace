@@ -15,9 +15,12 @@ clean:
 rebuild:
 	@$(MAKE) -C src -f Master.make rebuild
 
-# Build and run the unit tests
+# Build and run the unit tests: the engine suites plus the web console's own
+# (stdlib unittest, no build needed -- it serves fixtures, not the tree).
 test:
 	@$(MAKE) -C src -f Master.make test
+	@echo "--- webui ---"
+	@python3 webui/test/test_server.py
 
 check: test
 
