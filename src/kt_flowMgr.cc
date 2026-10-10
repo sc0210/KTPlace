@@ -873,7 +873,6 @@ bool FlowMgr::Impl::runPlacement(const std::string &algorithm, const std::string
             regions = &lefdefAdapter->getConstraints();
         }
         RatioPlaceParams params;
-        params.plotDir = plotDir;
         if (const char *e = std::getenv("KTPLACE_NTU_LEAF_CELLS")) {
             params.targetLeafCells = static_cast<std::size_t>(std::atoll(e));
         }

@@ -57,8 +57,6 @@ struct RatioPlaceParams {
     std::size_t maxRatioRetries = 24;
     // Set to log per-region decisions.
     bool verbose = false;
-    // Frame directory; empty writes nothing. One frame per accepted cut.
-    std::string plotDir;
 };
 
 struct RatioPlaceResult {

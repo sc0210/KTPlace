@@ -4,7 +4,7 @@
 #include "placer/ntuplace1/kt_ntuplace1.h"
 
 #include "util/kt_log.h"
-#include "visualization/kt_plotter.h"
+#include "visualization/kt_animator.h"
 
 #include <algorithm>
 #include <cmath>
@@ -78,6 +78,17 @@ private:
     RatioPlaceResult res_;
     // Scratch reused by every cut, so the recursion does not reallocate per level.
     std::vector<std::uint32_t> scratchNets_;
+    // Fixed blocks, in vertex order. fixedAreaIn() asks how much fixed area falls in
+    // a region, and it is asked once per look-ahead per cut; scanning every vertex to
+    // find the fixed ones made each ask O(design).
+    std::vector<std::uint32_t> fixedVerts_;
+    // Per-net state for one cut: how many of the net's blocks are on each side, its
+    // weight and its dummy side. Indexed by net id and stamped with gen_ rather than
+    // cleared, so a cut costs the region's nets and not the whole netlist's.
+    std::vector<std::uint32_t> count0_, count1_, seenGen_;
+    std::vector<std::uint8_t> dummy_;
+    std::vector<double> weight_;
+    std::uint32_t gen_ = 0;
 };
 
 void RatioPlacer::Impl::build() {
@@ -150,14 +161,24 @@ void RatioPlacer::Impl::build() {
         }
         nets_.push_back(std::move(n));
     }
+    // Per-cut net state, sized once here instead of being reallocated on every cut.
+    count0_.assign(nets_.size(), 0);
+    count1_.assign(nets_.size(), 0);
+    dummy_.assign(nets_.size(), 2);
+    weight_.assign(nets_.size(), 0.0);
+    seenGen_.assign(nets_.size(), 0);
+    gen_ = 0;
+
     rows_ = db_.getRows();
     die_ = placementDieBox(db_);
     res_.numMovable = mov_.size();
     res_.nets = nets_.size();
+    fixedVerts_.clear();
     for (std::size_t v = 0; v < nv; ++v) {
         const Vertex &vert = graph_.getVertex(v);
         if (vert.type == VertexType::Cell && vert.isFixed && !vert.isTerminal) {
             ++res_.numFixed;
+            fixedVerts_.push_back(static_cast<std::uint32_t>(v));
         }
     }
 }
@@ -177,12 +198,11 @@ double RatioPlacer::Impl::rowAreaIn(double x0, double /*y0*/, double x1, double 
 
 double RatioPlacer::Impl::fixedAreaIn(double x0, double y0, double x1, double y1) const {
     double a = 0.0;
-    const std::size_t nv = graph_.getNumVertices();
-    for (std::size_t v = 0; v < nv; ++v) {
+    // Only the fixed blocks, precomputed in build(). The previous scan over every
+    // graph vertex was O(design) per look-ahead, and a look-ahead runs (twice) on
+    // every retry of every cut.
+    for (const std::uint32_t v : fixedVerts_) {
         const Vertex &vert = graph_.getVertex(v);
-        if (vert.type != VertexType::Cell || !vert.isFixed || vert.isTerminal) {
-            continue;
-        }
         const double ox = std::max(0.0, std::min(x1, vert.x + vert.width) - std::max(x0, vert.x));
         const double oy = std::max(0.0, std::min(y1, vert.y + vert.height) - std::max(y0, vert.y));
         a += ox * oy;
@@ -307,12 +327,25 @@ bool RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cells, boo
         side[best] = (side[best] == 0) ? 1 : 0;
     }
 
-    // Per-net bookkeeping for the pass.
-    const std::size_t nn = nets_.size();
-    std::vector<std::uint32_t> count0(nn, 0), count1(nn, 0);
-    std::vector<std::uint8_t> dummy(nn, 2);
-    std::vector<double> weight(nn, 0.0);
-    for (std::size_t e = 0; e < nn; ++e) {
+    // Per-net bookkeeping for the pass. Only nets with a block in this region can
+    // affect it, and cellNets_ already lists each block's nets, so the region's nets
+    // are the union of its cells' nets. The previous scan of every net in the design
+    // -- and the four arrays sized to the design that came with it -- made every cut
+    // O(design), which dominated the run. seenGen_ stamps the nets of this cut, so
+    // the per-net arrays never need clearing between cuts.
+    ++gen_;
+    std::vector<std::uint32_t> &regionNets = scratchNets_;
+    regionNets.clear();
+    for (std::uint32_t i = 0; i < n; ++i) {
+        for (const std::uint32_t e : cellNets_[cells[i]]) {
+            if (seenGen_[e] == gen_) {
+                continue;
+            }
+            seenGen_[e] = gen_;
+            regionNets.push_back(e);
+        }
+    }
+    for (const std::uint32_t e : regionNets) {
         std::uint32_t c0 = 0, c1 = 0;
         for (const std::uint32_t c : nets_[e].cells) {
             const auto it = local.find(c);
@@ -321,26 +354,14 @@ bool RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cells, boo
             }
             (side[it->second] == 0 ? c0 : c1) += 1;
         }
-        if (c0 == 0 || c1 == 0) {
-            // Not in this region, or already wholly on one side. A net wholly
-            // inside the region still needs a weight, because a later move can
-            // sever it.
-            bool present = false;
-            for (const std::uint32_t c : nets_[e].cells) {
-                if (local.count(c) != 0) {
-                    present = true;
-                    break;
-                }
-            }
-            if (!present) {
-                continue;
-            }
-        }
-        count0[e] = c0;
-        count1[e] = c1;
+        // A net reached from a region cell always has at least one block here, so
+        // count0_ + count1_ is nonzero and it needs a weight: a later move can sever
+        // a net that is presently wholly on one side.
+        count0_[e] = c0;
+        count1_[e] = c1;
         std::uint8_t ds = 2;
-        weight[e] = netWeight(nets_[e], cutCoord, cutCoord, ds);
-        dummy[e] = ds;
+        weight_[e] = netWeight(nets_[e], cutCoord, cutCoord, ds);
+        dummy_[e] = ds;
     }
 
     // FM gains, then one move at a time, always the best legal one.
@@ -349,16 +370,16 @@ bool RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cells, boo
     const auto recompute = [&](std::uint32_t i) {
         double g = 0.0;
         for (const std::uint32_t e : cellNets_[cells[i]]) {
-            if (count0[e] + count1[e] == 0) {
+            if (count0_[e] + count1_[e] == 0) {
                 continue;
             }
             const bool from0 = side[i] == 0;
-            const std::uint32_t from = from0 ? count0[e] : count1[e];
-            const std::uint32_t to = from0 ? count1[e] : count0[e];
-            double w = weight[e];
-            if (dummy[e] != 2) {
+            const std::uint32_t from = from0 ? count0_[e] : count1_[e];
+            const std::uint32_t to = from0 ? count1_[e] : count0_[e];
+            double w = weight_[e];
+            if (dummy_[e] != 2) {
                 // The dummy is a pin on one side, so it counts there.
-                if (dummy[e] == 0) {
+                if (dummy_[e] == 0) {
                     // side 0 already carries it
                 }
             }
@@ -426,11 +447,11 @@ bool RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cells, boo
         }
         for (const std::uint32_t e : cellNets_[cells[i]]) {
             if (side[i] == 0) {
-                ++count0[e];
-                --count1[e];
+                ++count0_[e];
+                --count1_[e];
             } else {
-                ++count1[e];
-                --count0[e];
+                ++count1_[e];
+                --count0_[e];
             }
         }
         for (const std::uint32_t e : cellNets_[cells[i]]) {
@@ -449,7 +470,18 @@ bool RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cells, boo
 
 void RatioPlacer::Impl::writeFrame(const RatioRegion &/*r*/, std::size_t depth,
                                    const char *note) const {
-    if (params_.plotDir.empty()) {
+    // Frames go through the run's animator, the same sink every other stage uses,
+    // so the count is bounded by the animation budget instead of being one
+    // full-design SVG per accepted cut. The recursion accepts thousands of cuts,
+    // and a still per cut serialised the whole netlist each time -- tens of GB of
+    // writes that came to dominate the run. When the animator is not armed (no
+    // plot directory, or KTPLACE_ANIM=0) this is a no-op, exactly as it is for the
+    // analytical placer's frames.
+    PlacementAnimator &anim = PlacementAnimator::instance();
+    // Past the cap record() is a no-op, so do not build the coordinate arrays at
+    // all: the recursion offers a frame for every cut, most of which are over
+    // budget and would otherwise pay an O(vertices) copy each.
+    if (!anim.enabled() || anim.capped()) {
         return;
     }
     std::vector<float> xs(graph_.getNumVertices(), 0.0f);
@@ -462,10 +494,13 @@ void RatioPlacer::Impl::writeFrame(const RatioRegion &/*r*/, std::size_t depth,
         xs[mov_[i]] = static_cast<float>(posX_[i]);
         ys[mov_[i]] = static_cast<float>(posY_[i]);
     }
-    std::array<double, 4> box{die_[0], die_[1], die_[2], die_[3]};
-    std::string path = params_.plotDir + "/ntuplace1_" + std::to_string(depth) + ".svg";
-    writeFrameSvg(path, graph_, xs, ys, box, depth, 0, 0.0, 0.0, 0.0, note, fences_,
-                  /*fixedView=*/true);
+    const std::array<double, 4> box{die_[0], die_[1], die_[2], die_[3]};
+    // Not mandatory: the recursion offers one frame per accepted cut, which is far
+    // denser than the animator's budget. Left to the animator's thinning, the
+    // animation spreads those frames over the whole run instead of spending the
+    // budget in the first few levels and dropping legalization and detail placement.
+    anim.record(graph_, xs, ys, box, depth, params_.maxLevels, 0.0, 0.0, 0.0, note, fences_,
+                /*mandatory=*/false);
 }
 
 void RatioPlacer::Impl::divide(RatioRegion r) {
@@ -513,6 +548,10 @@ void RatioPlacer::Impl::divide(RatioRegion r) {
         } else {
             cut = r.y0 + 0.5 * h;
         }
+        if (params_.verbose) {
+            ktlog.trace("  ratio attempt depth {}: {} cells, cap {:.2f}", r.depth,
+                        r.cells.size(), cap);
+        }
         if (!bipartition(r.cells, vertical, cut, cap, side)) {
             continue;
         }
@@ -536,21 +575,36 @@ void RatioPlacer::Impl::divide(RatioRegion r) {
         // Empty sub-regions cannot be legalized and cannot be recursed into.
         if (r0.cells.empty() || r1.cells.empty()) {
             ++res_.ratioRetries;
+            ktlog.trace("  ratio cut depth {}: {} cells, cap {:.2f}: one side empty, retrying",
+                        r.depth, r.cells.size(), cap);
             continue;
         }
         // Look-ahead (Section 2.3): before accepting the cut, ask whether either
         // side could be legalized at all.
         if (!legalizable(r0) || !legalizable(r1)) {
             ++res_.ratioRetries;
+            ktlog.trace("  ratio cut depth {}: {} cells, cap {:.2f}: look-ahead unlegalizable, "
+                        "retrying",
+                        r.depth, r.cells.size(), cap);
             continue;
         }
         accepted = true;
+        // One line per accepted cut: the recursion's heartbeat. The trace file is
+        // what the web console streams into its trace pane, so it is written
+        // whether or not -v is set (verbose only additionally prints trace lines
+        // to stderr, just as it does for every stage's trace).
+        ktlog.trace("  ratio cut depth {}: {} cells -> {} / {}, cap {:.2f}, {} retries so far",
+                    r.depth, r.cells.size(), r0.cells.size(), r1.cells.size(), cap,
+                    res_.ratioRetries);
     }
 
     if (!accepted) {
         // Nothing legalizable was found: keep the region's blocks together at its
         // centre and let the recursion above, and the legalizer after, deal with
         // it. A region that cannot be cut legally is not a reason to stop.
+        ktlog.trace("  ratio region depth {}: {} cells kept together (no legalizable cut in {} "
+                    "attempts)",
+                    r.depth, r.cells.size(), params_.maxRatioRetries + 1);
         for (const std::uint32_t c : r.cells) {
             posX_[c] = 0.5 * (r.x0 + r.x1);
             posY_[c] = 0.5 * (r.y0 + r.y1);
@@ -559,10 +613,6 @@ void RatioPlacer::Impl::divide(RatioRegion r) {
     }
 
     ++res_.cuts;
-    if (params_.verbose) {
-        ktlog.trace("  ratio cut: {} cells -> {} / {}, {} retries so far", r.cells.size(),
-                    r0.cells.size(), r1.cells.size(), res_.ratioRetries);
-    }
     writeFrame(r, r.depth, "ratio bipartition");
     divide(std::move(r0));
     divide(std::move(r1));
@@ -576,6 +626,10 @@ RatioPlaceResult RatioPlacer::Impl::place(const RatioPlaceParams &params,
     if (mov_.empty()) {
         return res_;
     }
+    // Same reasoning as the cut lines: the trace file is the web console's live
+    // view, so the bookends of the recursion are written even without -v.
+    ktlog.trace("  ratio build: {} movable cells, {} fixed, {} hypernets", res_.numMovable,
+                res_.numFixed, res_.nets);
 
     // The paper starts every block at the centre of the chip: with nothing
     // decided, that is the only placement that implies no cut, and the whole
@@ -637,6 +691,8 @@ RatioPlaceResult RatioPlacer::Impl::place(const RatioPlaceParams &params,
     res_.meanImbalance =
         res_.cuts > 0 ? static_cast<double>(res_.ratioRetries) / static_cast<double>(res_.cuts)
                       : 0.0;
+    ktlog.trace("  ratio placement: {} cuts, {} retries, {} levels, HPWL {:.6e}", res_.cuts,
+                res_.ratioRetries, res_.maxDepth, res_.hpwlFinal);
     return res_;
 }
 
