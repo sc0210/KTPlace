@@ -372,9 +372,13 @@ void FlowMgr::Impl::finishAnimation() {
                 y[v] = static_cast<float>(g.getCell(v).y);
             }
             const std::array<double, 4> die = db->placementDieBox();
+            // One caption for all of them: every hold frame is the same finished
+            // placement, so numbering them apart reads as a broken counter
+            // ("step N of N-1") on the picture the loop lingers on longest.
+            const std::size_t done = animator.frameCount();
             for (std::size_t i = 0; i < plot.finalHold; ++i) {
-                animator.record(g, x, y, die, animator.frameCount(), animator.frameCount(),
-                                db->hpwl(), 0.0, 0.0, "final placement", nullptr,
+                animator.record(g, x, y, die, done, done + 1, db->hpwl(), 0.0, 0.0,
+                                "final placement", nullptr,
                                 /*mandatory=*/true);
             }
         }
