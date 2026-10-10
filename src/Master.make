@@ -251,12 +251,18 @@ coverage:
 		--min $(or $(COVERAGE_MIN),0)
 
 coverage-clean:
-	@rm -rf $(BUILD_DIR)-cov
+	@rm -rf $(BUILD_DIR)-cov 2>/dev/null || \
+		find $(BUILD_DIR)-cov -mindepth 1 -delete
 
-# Clean
+# Clean. $(BUILD_DIR) may be a Docker named volume mounted by compose.yaml at
+# build/ (and build-cov/): rm unlinks the contents but then fails on the mount
+# point itself with "Device or resource busy". When that happens, fall back to
+# emptying the directory, which is all a clean needs -- so `make clean` and
+# `make rebuild` work both inside the container's volume and on a plain tree.
 clean:
 	@echo "Cleaning..."
-	@rm -rf $(BUILD_DIR)
+	@rm -rf $(BUILD_DIR) 2>/dev/null || \
+		find $(BUILD_DIR) -mindepth 1 -delete
 	@$(foreach dir,$(SUBDIRS),$(MAKE) -C $(dir) -f Master.make clean;)
 
 # Rebuild
