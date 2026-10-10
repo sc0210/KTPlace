@@ -2879,7 +2879,13 @@ SimplResult SimplePlacer::Impl::run(const SimplParams &P, const std::string &plo
                         h, bestInitHpwl,
                         bestInitHpwl > 0.0 ? 100.0 * (h - bestInitHpwl) / bestInitHpwl : 0.0,
                         initStale, par_.initPatience);
-            if (par_.initPatience > 0 && initStale >= static_cast<int>(par_.initPatience)) {
+            // Only the star model stops early: it is placement-independent, so a
+            // round after convergence re-solves the same system. B2B is rebuilt
+            // from the moved placement every round, and its later rounds do pay
+            // (see initMaxIters), so it keeps every round as before.
+            const std::size_t patience =
+                par_.initNetModel == SimplParams::NetModel::Star ? par_.initPatience : 0;
+            if (patience > 0 && initStale >= static_cast<int>(patience)) {
                 // Converged: further rounds are not paying for themselves.
                 break;
             }

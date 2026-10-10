@@ -47,6 +47,7 @@ struct SimplParams {
     /// and on a fenced design it only re-solves the fence clamping. Measured with
     /// every round run (this was 0): rounds 3-7 changed adaptec1's final HPWL not
     /// at all (4.219e+08 for 2, 3 and 7 rounds) and cost mgc_superblue16_a ~100 s.
+    /// Applies to the star model only; a B2B warm-up runs every round.
     /// 0 disables the early exit entirely: every round in initMaxIters runs.
     std::size_t initPatience = 1;
 
