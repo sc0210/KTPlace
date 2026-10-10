@@ -115,7 +115,7 @@ a:hover { text-decoration: underline; }
 #runs li:hover { background: #182330; }
 #runs li.active { background: #1b2a3a; }
 #runs .rname { font-family: var(--mono); font-size: 12px; }
-#runs .rmeta { font-size: 11px; color: var(--muted); display: flex; gap: 8px; margin-top: 3px;
+#runs .rmeta { font-size: 11px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 2px 8px; margin-top: 3px;
   align-items: center; }
 #runs .rbar { height: 4px; border-radius: 3px; background: #0d1216; overflow: hidden;
   margin-top: 6px; }
@@ -578,6 +578,10 @@ async function refreshRuns() {
       $("runs").appendChild(li);
     }
     renderHistory(data.runs);
+    // A fresh load opens on the latest run rather than an empty detail panel;
+    // afterwards the viewer owns the selection (deleting the watched run
+    // re-opens the newest, anything else leaves it alone).
+    if (!current && data.runs.length) selectRun(data.runs[0].id);
     if (data.running >= data.maxConcurrent) {
       $("runbtn").disabled = true;
       $("runbtn").textContent = "Run placement (one run at a time)";
