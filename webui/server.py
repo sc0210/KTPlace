@@ -16,6 +16,7 @@ already carries.
 Endpoints
   GET    /                       the console page
   GET    /guide                  how a placement run works, as flow charts
+  GET    /bench                  benchmark results: designs x algorithms, ranked by HPWL
   GET    /api/benchmarks         designs the console can run
   GET    /api/system             machine CPU and memory, for the resource panel
   GET    /api/runs               run history with headline metrics
@@ -970,6 +971,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_file(STATIC_DIR / "index.html")
         if parsed.path in ("/guide", "/guide.html"):
             return self._serve_file(STATIC_DIR / "guide.html")
+        if parsed.path in ("/bench", "/bench.html"):
+            return self._serve_file(STATIC_DIR / "bench.html")
         if parsed.path.startswith("/api/benchmarks"):
             return self._json(200, {"root": str(BENCH_ROOT), "designs": scan_benchmarks()})
         if parsed.path == "/api/system":
