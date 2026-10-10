@@ -373,7 +373,7 @@ and the mechanism for it has not been identified here.
 
 Unless run with `--no-plots`, every run writes, under `<work-dir>/plots`, per-stage SVG frames (vector, so
 they stay sharp at any zoom), a per-iteration HPWL curve, and — unless
-`KTPLACE_ANIM=0` — an animated GIF assembled from those frames. On top of that, every run
+`KTPLACE_ANIM=0` — an animated GIF assembled from those frames. On top of that, such a run
 writes one high-resolution still of the *finished* placement to
 `plots/final/final.png`: 6144x6144 by default, which on an ISPD 2005 design is
 about fourteen pixels across for a standard cell. The animation frames are
