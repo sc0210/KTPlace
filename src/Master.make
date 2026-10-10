@@ -15,10 +15,10 @@ CXX := g++
 # lines back through the optimizer at higher levels, which makes the uncovered
 # set harder to read and the numbers less trustworthy.
 ifeq ($(COVERAGE),1)
-  CXXFLAGS := -std=c++23 -Wall -Wextra -Wpedantic -Wshadow -O0 -g -pthread --coverage
+  CXXFLAGS := -std=c++23 -Wall -Wextra -Wpedantic -Wshadow -Wno-psabi -O0 -g -pthread --coverage
   COVERAGE_LDFLAGS := --coverage
 else
-  CXXFLAGS := -std=c++23 -Wall -Wextra -Wpedantic -Wshadow -O2 -g -pthread
+  CXXFLAGS := -std=c++23 -Wall -Wextra -Wpedantic -Wshadow -Wno-psabi -O2 -g -pthread
 endif
 # All quoted includes are project-root-relative (e.g. "datamodel/kt_dm.h"),
 # so the project root (this directory) is the only include path needed.
@@ -251,8 +251,7 @@ coverage:
 		--min $(or $(COVERAGE_MIN),0)
 
 coverage-clean:
-	@rm -rf $(BUILD_DIR)-cov 2>/dev/null || \
-		find $(BUILD_DIR)-cov -mindepth 1 -delete
+	@rm -rf $(BUILD_DIR)-cov 2>/dev/null || find $(BUILD_DIR)-cov -mindepth 1 -delete
 
 # Clean. $(BUILD_DIR) may be a Docker named volume mounted by compose.yaml at
 # build/ (and build-cov/): rm unlinks the contents but then fails on the mount
@@ -261,8 +260,7 @@ coverage-clean:
 # `make rebuild` work both inside the container's volume and on a plain tree.
 clean:
 	@echo "Cleaning..."
-	@rm -rf $(BUILD_DIR) 2>/dev/null || \
-		find $(BUILD_DIR) -mindepth 1 -delete
+	@rm -rf $(BUILD_DIR) 2>/dev/null || find $(BUILD_DIR) -mindepth 1 -delete
 	@$(foreach dir,$(SUBDIRS),$(MAKE) -C $(dir) -f Master.make clean;)
 
 # Rebuild
