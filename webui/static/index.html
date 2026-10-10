@@ -328,9 +328,13 @@ catch (e) { /* storage blocked: defaults */ }
 let animSrc = null;   // the current run's GIF, loaded only once its tab is open
 
 function applyTabs() {
-  if (tabState.tab === "anim" && !animSrc) tabState.tab = "run";  // nothing to show
+  // The tab actually shown: the preference, unless it is the animation and
+  // this run has none. tabState itself is left alone, so the preference
+  // survives runs without a GIF.
+  const active = tabState.tab === "anim" && !animSrc ? "run" : tabState.tab;
+  const wasHidden = $("panel-run").hidden;
   for (const [name, [tabId, panelId]] of Object.entries(TABS)) {
-    const on = name === tabState.tab;
+    const on = name === active;
     const tab = $(tabId);
     tab.setAttribute("aria-selected", on);
     tab.setAttribute("aria-expanded", on && !tabState.folded);
@@ -342,11 +346,18 @@ function applyTabs() {
   // out of sight.
   const img = $("anim").querySelector("img");
   if (img && !$("panel-anim").hidden && !img.getAttribute("src")) img.src = img.dataset.src;
+  // A hidden <pre> ignores scrollTop, so the logs are re-pinned to their tail
+  // when the Run panel comes back into view.
+  if (wasHidden && !$("panel-run").hidden) {
+    if (stick) logEl.scrollTop = logEl.scrollHeight;
+    if (stickTrace) traceEl.scrollTop = traceEl.scrollHeight;
+  }
 }
 
 function selectTab(name) {
   // The open tab toggles its panel; another tab opens expanded.
-  if (name === tabState.tab) tabState.folded = !tabState.folded;
+  const active = tabState.tab === "anim" && !animSrc ? "run" : tabState.tab;
+  if (name === active) tabState = {tab: name, folded: !tabState.folded};
   else tabState = {tab: name, folded: false};
   try { localStorage.setItem("ktplace.tabs", JSON.stringify(tabState)); } catch (e) {}
   applyTabs();
@@ -374,9 +385,9 @@ for (const [name, [tabId]] of Object.entries(TABS)) {
 $("detailtabs").addEventListener("keydown", (ev) => {
   if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
   const names = Object.keys(TABS).filter((n) => !$(TABS[n][0]).disabled);
-  const i = names.indexOf(tabState.tab);
-  const next = names[(i + (ev.key === "ArrowRight" ? 1 : names.length - 1)) % names.length];
-  if (next && next !== tabState.tab) { selectTab(next); $(TABS[next][0]).focus(); }
+  const cur = names.indexOf(document.activeElement && document.activeElement.id === "tab-anim" ? "anim" : "run");
+  const next = names[(cur + (ev.key === "ArrowRight" ? 1 : names.length - 1)) % names.length];
+  if (next && next !== names[cur]) { selectTab(next); $(TABS[next][0]).focus(); }
   ev.preventDefault();
 });
 applyTabs();
