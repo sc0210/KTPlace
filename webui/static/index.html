@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>KTPlace web console</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%2311171c'/%3E%3Cpath%20d='M5%2012%2012%205M5%2027l22-22M27%2020%2020%2027'%20stroke='%234a9eff'%20stroke-width='3'%20stroke-linecap='round'/%3E%3Ccircle%20cx='12'%20cy='5'%20r='3'%20fill='%233fba7d'/%3E%3C/svg%3E">
 <style>
 :root {
   --bg: #0b0f12; --panel: #11171c; --line: #22303a; --text: #d7e0e6;
@@ -106,15 +107,17 @@ textarea { width: 100%; padding: 7px 9px; background: #0d1216; color: var(--text
 details { margin-top: 12px; }
 details summary { cursor: pointer; font-size: 12px; color: var(--muted); }
 details[open] summary { margin-bottom: 8px; color: var(--text); }
-.hint button { padding: 3px 8px; font-size: 11px; margin-left: 4px; }
+.hint button { padding: 7px 10px; font-size: 11px; margin-left: 4px; }
 .btnrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.btnrow button, .btnrow a.btn { padding: 5px 10px; font-size: 12px; border: 1px solid var(--line);
+.btnrow button, .btnrow a.btn { padding: 7px 12px; font-size: 12px; border: 1px solid var(--line);
   border-radius: 6px; background: #16202a; color: var(--text); text-decoration: none; }
 .btnrow a.btn:hover { background: #1d2b38; text-decoration: none; }
-#runs li { position: relative; }
-#runs .rdel { position: absolute; top: 5px; right: 6px; border: none; background: none;
-  color: var(--muted); font-size: 15px; line-height: 1; padding: 2px 6px; }
-#runs .rdel:hover { color: var(--bad); background: none; }
+#runs li { position: relative; padding-right: 36px; }
+#runs .rdel { position: absolute; top: 4px; right: 4px; width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  border: none; background: none; color: var(--muted); font-size: 15px;
+  line-height: 1; padding: 0; border-radius: 6px; }
+#runs .rdel:hover { color: var(--bad); background: rgba(229,82,76,.12); }
 #runs .rlbl { font-size: 11px; color: var(--accent); }
 #execrow { display: flex; gap: 6px; margin: 10px 0 0; }
 #execrow input { flex: 1; font-family: var(--mono); font-size: 12px; }
@@ -123,6 +126,9 @@ details[open] summary { margin-bottom: 8px; color: var(--text); }
   white-space: pre-wrap; background: #0d1216; border: 1px solid var(--line);
   border-radius: 6px; font: 11px/1.4 var(--mono); color: #b7c6d0; }
 #historysec { margin: 0 20px 20px; }
+/* Nine columns are wider than a phone holds; scroll the table rather than let
+   it push the whole page sideways. */
+#historysec .tw { overflow-x: auto; }
 #historysec table { width: 100%; border-collapse: collapse; font-size: 12px; }
 #historysec th, #historysec td { text-align: left; padding: 7px 10px;
   border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -133,8 +139,8 @@ details[open] summary { margin-bottom: 8px; color: var(--text); }
 #historysec .open { cursor: pointer; color: var(--accent); }
 #historysec .open:hover { text-decoration: underline; }
 #historysec .rmv { border: none; background: none; color: var(--muted); cursor: pointer;
-  font-size: 14px; }
-#historysec .rmv:hover { color: var(--bad); }
+  font-size: 14px; width: 28px; height: 28px; border-radius: 6px; padding: 0; }
+#historysec .rmv:hover { color: var(--bad); background: rgba(229,82,76,.12); }
 footer { padding: 12px 20px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
 code { font-family: var(--mono); }
 #empty { color: var(--muted); padding: 20px; text-align: center; }
@@ -219,7 +225,8 @@ code { font-family: var(--mono); }
         <span id="runmeta" style="color:var(--muted);font-size:12px"></span>
       </div>
       <div id="progress">
-        <div class="bar"><div class="fill" id="pbar"></div></div>
+        <div class="bar" id="ptrack" role="progressbar" aria-label="Run progress"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="fill" id="pbar"></div></div>
         <div class="pline">
           <span class="stage" id="pstage">—</span>
           <span class="beat" id="pbeat"></span>
@@ -241,13 +248,16 @@ code { font-family: var(--mono); }
 
 <section id="historysec">
   <h2>Run history</h2>
-  <table>
-    <thead>
-      <tr><th>Run</th><th>Design</th><th>Algo</th><th>Status</th><th>Elapsed</th>
-          <th>HPWL</th><th>Verdict</th><th>Env</th><th></th></tr>
-    </thead>
-    <tbody id="history"></tbody>
-  </table>
+  <div class="tw">
+    <table>
+      <thead>
+        <tr><th scope="col">Run</th><th scope="col">Design</th><th scope="col">Algo</th>
+            <th scope="col">Status</th><th scope="col">Elapsed</th><th scope="col">HPWL</th>
+            <th scope="col">Verdict</th><th scope="col">Env</th><th scope="col"></th></tr>
+      </thead>
+      <tbody id="history"></tbody>
+    </table>
+  </div>
 </section>
 <footer>
   Everything runs in the container; ktplace is invoked with
@@ -270,6 +280,18 @@ let stickTrace = true;
 let showTrace = false;    // set from the run's verbose flag
 
 const ansi = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+
+// A pane keeps the tail of its stream, not all of it: a long verbose trace runs
+// to hundreds of MB, which a <pre> cannot hold. The download links have it all.
+const PANE_LIMIT = 2 << 20;
+function appendTail(el, text) {
+  let all = el.textContent + text;
+  if (all.length > PANE_LIMIT) {
+    all = "[earlier output trimmed; download the file for all of it]\n"
+        + all.slice(all.length - PANE_LIMIT);
+  }
+  el.textContent = all;
+}
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -401,6 +423,7 @@ async function refreshRuns() {
           : "");
       const del = document.createElement("button");
       del.className = "rdel"; del.textContent = "✕"; del.title = "Delete this run";
+      del.setAttribute("aria-label", "Delete run " + r.id);
       del.onclick = (ev) => { ev.stopPropagation(); deleteRun(r.id, r.status); };
       li.appendChild(del);
       li.onclick = () => selectRun(r.id);
@@ -443,7 +466,7 @@ function renderHistory(runs) {
       `<td class="num">${esc(s.hpwl || "—")}</td>` +
       `<td>${esc(s.verdict || "—")}</td>` +
       `<td class="num" title="${esc(envTip)}">${envKeys.length ? envKeys.length + " set" : "—"}</td>` +
-      `<td><button class="rmv" title="Delete this run">✕</button></td>`;
+      `<td><button class="rmv" title="Delete this run" aria-label="Delete run ${esc(r.id)}">✕</button></td>`;
     tr.querySelector("td.open").onclick = () => selectRun(r.id);
     tr.querySelector(".rmv").onclick = () => deleteRun(r.id, r.status);
     tb.appendChild(tr);
@@ -501,23 +524,37 @@ async function poll(id) {
 
   // One stream per call; the server answers for whichever the run has. Both
   // ride the same tick so the trace pane keeps up with the transcript.
+  // The server hands out at most 1 MB per call, so a stream that is behind
+  // is drained a few chunks per tick rather than in one huge response.
   const pull = async (el, stream, sticks) => {
-    const data = await api(`/api/runs/${id}/log?offset=${offsets[stream]}&stream=${stream}`);
-    if (data.offset > offsets[stream]) {
-      el.textContent += ansi(data.text);
+    let data;
+    for (let i = 0; i < 8; i++) {
+      data = await api(`/api/runs/${id}/log?offset=${offsets[stream]}&stream=${stream}`);
+      if (data.offset <= offsets[stream]) break;
+      appendTail(el, ansi(data.text));
       offsets[stream] = data.offset;
-      if (sticks) el.scrollTop = el.scrollHeight;
+      if (data.text.length < (1 << 19)) break;  // caught up
     }
+    if (sticks) el.scrollTop = el.scrollHeight;
     return data;
   };
 
+  // setInterval does not wait for an async tick, and a tick that drains a
+  // large trace can outlast the interval. Two ticks reading from the same
+  // offsets would append the same text twice, so a tick still in flight
+  // makes the next one a no-op.
+  let busy = false;
   const tick = async () => {
+    if (busy || id !== current) return;
+    busy = true;
     try {
       const data = await pull(logEl, "log", stick);
       renderProgress(data.progress, data.heartbeat,
                      data.heartbeat && data.heartbeat.state, data.elapsed);
-      if (showTrace) await pull(traceEl, "trace", stickTrace);
-      if (data.done) {        // finished: one final state fetch and stop
+      // done means finished *and* fully read, per stream; the trace can still
+      // be paging out after the transcript has caught up.
+      const traceDone = !showTrace || (await pull(traceEl, "trace", stickTrace)).done;
+      if (data.done && traceDone) {  // finished: one final state fetch and stop
         clearInterval(pollTimer); pollTimer = null;
         const run = await api(`/api/runs/${id}`);
         renderDetail(run);
@@ -526,6 +563,8 @@ async function poll(id) {
       }
     } catch (e) {
       // run torn down mid-poll; retry then give up
+    } finally {
+      busy = false;
     }
   };
 
@@ -545,6 +584,7 @@ function renderProgress(progress, heartbeat, status, elapsed) {
   const fill = $("pbar");
   const frac = Math.max(0, Math.min(1, progress.fraction || 0));
   fill.style.width = (frac * 100).toFixed(1) + "%";
+  $("ptrack").setAttribute("aria-valuenow", String(Math.round(frac * 100)));
   fill.className = "fill" + (status === "done" ? " done"
                              : status === "failed" ? " failed" : "");
   const beat = $("pbeat");
@@ -700,7 +740,7 @@ function renderDetail(run) {
 // One-shot commands, streamed by polling the same way a run's transcript is.
 // No PTY: interactive programs (an editor, `top`) will not behave, which is
 // what the hint in the panel says.
-let execId = null, execTimer = null, execOffset = 0;
+let execId = null, execTimer = null, execOffset = 0, execBusy = false;
 
 async function runCommand() {
   const cmd = $("execcmd").value.trim();
@@ -724,12 +764,15 @@ async function runCommand() {
 }
 
 async function pollExec() {
-  if (!execId) return;
+  if (!execId || execBusy) return;   // same overlap guard as the run poll
+  const eid = execId;
+  execBusy = true;
   try {
-    const data = await api(`/api/exec/${execId}?offset=${execOffset}`);
+    const data = await api(`/api/exec/${eid}?offset=${execOffset}`);
+    if (eid !== execId) return;      // a new command started meanwhile
     if (data.text) {
       const out = $("execout");
-      out.textContent += data.text;
+      appendTail(out, data.text);
       execOffset = data.offset;
       out.scrollTop = out.scrollHeight;
     }
@@ -740,6 +783,8 @@ async function pollExec() {
   } catch (e) {
     $("execmeta").textContent = "lost the command: " + e.message;
     clearInterval(execTimer); execTimer = null;
+  } finally {
+    execBusy = false;
   }
 }
 
