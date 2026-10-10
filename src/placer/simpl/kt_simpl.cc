@@ -932,6 +932,8 @@ void SimplePlacer::Impl::buildB2B(const std::vector<double> &px, const std::vect
                 double w = alpha * anchorScale_;
                 if (par_.pseudonetLaw == SimplParams::PseudonetLaw::InverseLength) {
                     // alpha / distance, with the same length floor as a B2B edge.
+                    // No anchorScale_ here: alpha/d already scales with the units
+                    // exactly as a B2B edge's 1/d does, so it is unit-free as is.
                     // The floor matters most exactly where the paper's initial
                     // placement puts everything: all cells start near the centre,
                     // so distance is often ~0 and the weight is otherwise

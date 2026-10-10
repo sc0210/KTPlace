@@ -41,9 +41,14 @@ struct SimplParams {
     /// test with the noise taken out.
     double initTolFrac = 5e-3;
     /// Consecutive rounds below initTolFrac before the warm-up is called done.
-    /// One, because the warm-up is meant to be rough.
+    /// One, because the warm-up is meant to be rough, and because the star model
+    /// is placement-independent: once its solve has converged, a further round
+    /// re-solves the same system (adaptec1: zero CG iterations from round 2 on),
+    /// and on a fenced design it only re-solves the fence clamping. Measured with
+    /// every round run (this was 0): rounds 3-7 changed adaptec1's final HPWL not
+    /// at all (4.219e+08 for 2, 3 and 7 rounds) and cost mgc_superblue16_a ~100 s.
     /// 0 disables the early exit entirely: every round in initMaxIters runs.
-    std::size_t initPatience = 0;
+    std::size_t initPatience = 1;
 
     // --- look-ahead legalization --------------------------------------------
     /// Run look-ahead legalization. Turning this off returns the raw lower bound,
