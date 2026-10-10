@@ -113,8 +113,8 @@ docker run --rm -v "$PWD/output:/ktplace/output" ktplace-run \
 ```
 
 `ktplace` is the image's entrypoint, so everything after the image name goes
-to it: add `-p plots` for the visualization, `-v .../benchmark:/ktplace/benchmark:ro`
-to mount other suites. The vendored adaptec1 is already inside, so this runs
+to it: plots go to `<work-dir>/plots` unless you pass `--no-plots`, and
+`-v .../benchmark:/ktplace/benchmark:ro` mounts other suites. The vendored adaptec1 is already inside, so this runs
 a full placement with no mounts at all. Like the `ci` build it runs on the
 host's own architecture -- arm64 on Apple Silicon, x86-64 otherwise.
 
@@ -371,7 +371,7 @@ and the mechanism for it has not been identified here.
 
 ## Placement images
 
-Every run writes, under `<work-dir>/plots`, per-stage SVG frames (vector, so
+Unless run with `--no-plots`, every run writes, under `<work-dir>/plots`, per-stage SVG frames (vector, so
 they stay sharp at any zoom), a per-iteration HPWL curve, and — unless
 `KTPLACE_ANIM=0` — an animated GIF assembled from those frames. On top of that, every run
 writes one high-resolution still of the *finished* placement to
@@ -446,6 +446,7 @@ goes through the LEF/DEF adapter, everything else is loaded as Bookshelf.
 | --- | --- |
 | `-a, --algorithm <name>` | `simpl` (default) or `ntuplace1` |
 | `-w, --work-dir <dir>` | where to write everything; created if missing (default: current directory) |
+| `--no-plots` | draw nothing; skip every frame and picture |
 | `-v, --verbose` | also echo trace records to the console |
 | `-h, --help` / `-V, --version` | help / version |
 

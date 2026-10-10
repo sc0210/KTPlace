@@ -84,6 +84,7 @@ too.
 ktplace <input_dir> [options]
   -a, --algorithm <name>   simpl (default) or ntuplace1
   -w, --work-dir <dir>     where placed.pl, plots/ and ktplace.log go
+      --no-plots           draw nothing -- no frames, gallery or GIF (much less disk)
   -v, --verbose            also print trace diagnostics (ktplace_trace.log is always written)
   -h, --help / -V, --version
 ```
