@@ -318,6 +318,8 @@ code { font-family: var(--mono); }
 const $ = (id) => document.getElementById(id);
 const logEl = $("log");
 const traceEl = $("tracelog");
+let stick = true;         // autoscroll while the user is at the bottom
+let stickTrace = true;
 
 // Run / Animated placement tabs. Which tab is open and whether it is folded is
 // a per-viewer preference, so it is remembered in localStorage when it can be.
@@ -357,7 +359,8 @@ function applyTabs() {
 function selectTab(name) {
   // The open tab toggles its panel; another tab opens expanded.
   const active = tabState.tab === "anim" && !animSrc ? "run" : tabState.tab;
-  if (name === active) tabState = {tab: name, folded: !tabState.folded};
+  // Folding the fallback Run tab keeps the stored preference (the animation).
+  if (name === active) tabState = {...tabState, folded: !tabState.folded};
   else tabState = {tab: name, folded: false};
   try { localStorage.setItem("ktplace.tabs", JSON.stringify(tabState)); } catch (e) {}
   applyTabs();
@@ -385,7 +388,8 @@ for (const [name, [tabId]] of Object.entries(TABS)) {
 $("detailtabs").addEventListener("keydown", (ev) => {
   if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
   const names = Object.keys(TABS).filter((n) => !$(TABS[n][0]).disabled);
-  const cur = names.indexOf(document.activeElement && document.activeElement.id === "tab-anim" ? "anim" : "run");
+  const cur = names.findIndex((n) => TABS[n][0] === ev.target.id);
+  if (cur < 0) return;
   const next = names[(cur + (ev.key === "ArrowRight" ? 1 : names.length - 1)) % names.length];
   if (next && next !== names[cur]) { selectTab(next); $(TABS[next][0]).focus(); }
   ev.preventDefault();
@@ -403,8 +407,6 @@ applyTabs();
 let current = null;       // run id being watched
 let pollTimer = null;
 let runsListTimer = null;
-let stick = true;         // autoscroll while the user is at the bottom
-let stickTrace = true;
 let showTrace = false;    // set from the run's verbose flag
 
 const ansi = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
