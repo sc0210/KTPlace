@@ -185,9 +185,6 @@ void FlowMgr::Impl::runPlacement(const std::string &algorithm) {
         if (const char *e = std::getenv("KTPLACE_NTU_RETRIES")) {
             params.maxRatioRetries = static_cast<std::size_t>(std::atoll(e));
         }
-        if (const char *e = std::getenv("KTPLACE_NTU_MIN_NET_WEIGHT")) {
-            params.minNetWeight = std::atof(e);
-        }
         if (const char *e = std::getenv("KTPLACE_NTU_VERBOSE")) {
             params.verbose = std::atoll(e) != 0;
         }

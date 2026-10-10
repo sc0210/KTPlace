@@ -8,11 +8,12 @@
 #include "visualization/kt_animator.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
-#include <deque>
+#include <cstdint>
 #include <limits>
 #include <numeric>
-#include <unordered_map>
+#include <queue>
 #include <utility>
 #include <vector>
 
@@ -20,12 +21,12 @@ namespace ktplace {
 namespace {
 
 // A net as the partitioner needs it: the movable blocks it touches, and the
-// bounding box of the fixed pins hanging off it. The fixed pins are the t1/t2 of
-// the paper's Figure 2 -- they are what tells a cut which side a net wants to be
-// on, and they are the reason this is a hypergraph and not a graph.
+// extent of its fixed pins. The fixed pins are the t1/t2 of the paper's Figure 2
+// -- they tell a cut which side a net wants to be on, and they are the reason
+// this is a hypergraph and not a graph.
 struct HyperNet {
     std::vector<std::uint32_t> cells;
-    double fx0 = 0.0, fx1 = 0.0, fy0 = 0.0, fy1 = 0.0;
+    double fx0 = 0.0, fx1 = 0.0, fy0 = 0.0, fy1 = 0.0;  // fixed pin points, min/max
     std::size_t fixedPins = 0;
 };
 
@@ -35,11 +36,25 @@ struct RatioRegion {
     std::size_t depth = 0;
 };
 
-}  // namespace
+struct AreaRect {
+    double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
+};
 
-namespace {
-constexpr std::uint32_t kNoIndex = 0xFFFFFFFFu;
+double overlap(const AreaRect &a, double x0, double y0, double x1, double y1) {
+    const double w = std::min(a.x1, x1) - std::max(a.x0, x0);
+    const double h = std::min(a.y1, y1) - std::max(a.y0, y0);
+    return (w > 0.0 && h > 0.0) ? w * h : 0.0;
 }
+
+constexpr std::uint32_t kNoIndex = 0xFFFFFFFFu;
+// FM passes per cut. A pass that finds no improving prefix ends the cut sooner;
+// this only bounds the pathological case.
+constexpr int kMaxPasses = 8;
+// Balance slack: side 0 may hold target +- this fraction of the region's cell
+// area (and never less than two of its largest cells, so FM can always move).
+constexpr double kBalanceSlack = 0.02;
+
+}  // namespace
 
 class RatioPlacer::Impl {
 public:
@@ -49,19 +64,20 @@ public:
 
 private:
     void build();
-    // Row area inside a rectangle. The paper's look-ahead asks whether a
-    // sub-region could be legalized; this is the area half of that question, and
-    // it is the half that can be asked without committing to a packing.
-    double rowAreaIn(double x0, double y0, double x1, double y1) const;
-    double fixedAreaIn(double x0, double y0, double x1, double y1) const;
+    // Row area inside a rectangle, less the fixed blocks that sit on those rows:
+    // the area a region can actually give its cells. This is the capacity the
+    // whitespace distribution splits by and the look-ahead checks against.
+    double freeAreaIn(double x0, double y0, double x1, double y1) const;
     double movableArea(const std::vector<std::uint32_t> &) const;
-    bool legalizable(const RatioRegion &r) const;
     void divide(RatioRegion r);
-    // Fiduccia-Mattheyses pass with a balance cap. Returns true on success.
-    bool bipartition(const std::vector<std::uint32_t> &cells, bool vertical, double cutCoord,
-                     double maxImbalance, std::vector<std::uint8_t> &side);
-    double netWeight(const HyperNet &n, double p1, double p2, std::uint8_t &dummySide) const;
-    void writeFrame(const RatioRegion &r, std::size_t depth, const char *note) const;
+    // Fiduccia-Mattheyses min-cut aiming at `target` cell area on side 0, within
+    // +-tol. Pins outside the region are fixed on the side of the cut they lie
+    // on (terminal propagation). Returns the number of nets cut.
+    std::size_t bipartition(const std::vector<std::uint32_t> &cells, bool vertical, double cut,
+                            double target, double tol, std::vector<std::uint8_t> &side);
+    void placeLeaf(const RatioRegion &r);
+    void setRegionCentre(const RatioRegion &r);
+    void writeFrame(std::size_t depth, const char *note) const;
 
     PlacementDB &db_;
     Graph graph_;
@@ -71,39 +87,52 @@ private:
     // For each movable, the nets it is on, so a gain update does not rescan the
     // whole netlist.
     std::vector<std::vector<std::uint32_t>> cellNets_;
-    std::vector<PlacementDB::RowInfo> rows_;
-    std::array<double, 4> die_{};
-    std::vector<double> posX_, posY_;  // the answer, filled as the recursion ends
+    std::vector<AreaRect> rowRects_;    // one per subrow
+    std::vector<AreaRect> fixedRects_;  // fixed blocks, terminals included
+    // Where cells may go: the bounding box of the rows. Not the die box, which also
+    // spans pads and macros outside the rows -- a region out there has no capacity
+    // at all, and every cell the recursion sends there is one the legalizer must
+    // drag back.
+    std::array<double, 4> box_{};
+    // Each movable's position: the centre of the region it currently belongs to,
+    // refined as the recursion descends. Pins outside a region are read from here
+    // when a cut decides which side they pull towards.
+    std::vector<double> posX_, posY_;
     RatioPlaceParams params_;
     const constraintMgr *fences_ = nullptr;
     RatioPlaceResult res_;
-    // Scratch reused by every cut, so the recursion does not reallocate per level.
-    std::vector<std::uint32_t> scratchNets_;
-    // Fixed blocks, in vertex order. fixedAreaIn() asks how much fixed area falls in
-    // a region, and it is asked once per look-ahead per cut; scanning every vertex to
-    // find the fixed ones made each ask O(design).
-    std::vector<std::uint32_t> fixedVerts_;
-    // Per-net state for one cut: how many of the net's blocks are on each side, its
-    // weight and its dummy side. Indexed by net id and stamped with gen_ rather than
-    // cleared, so a cut costs the region's nets and not the whole netlist's.
-    std::vector<std::uint32_t> count0_, count1_, seenGen_;
-    std::vector<std::uint8_t> dummy_;
-    std::vector<double> weight_;
+
+    // Per-cut scratch, sized once and stamped with gen_ rather than cleared, so a
+    // cut costs the region's cells and nets, not the whole design's.
     std::uint32_t gen_ = 0;
+    std::vector<std::uint32_t> localGen_, localOf_;  // per movable
+    std::vector<std::uint32_t> netGen_;              // per net
+    std::vector<std::uint8_t> anchor_;               // per net: bit s = a fixed pin on side s
+    std::vector<std::array<std::uint32_t, 2>> cnt_;  // per net: pins on each side
+    std::vector<std::uint32_t> regionNets_;
 };
 
 void RatioPlacer::Impl::build() {
     const std::size_t nv = graph_.getNumVertices();
     for (std::size_t v = 0; v < nv; ++v) {
         const Vertex &vert = graph_.getVertex(v);
-        if (vert.type != VertexType::Cell || vert.isFixed || vert.isTerminal) {
+        if (vert.type != VertexType::Cell) {
+            continue;
+        }
+        if (vert.isFixed || vert.isTerminal) {
+            // Bookshelf marks fixed macros as terminals (every one of adaptec1's 543
+            // is), so a "fixed and not terminal" test finds no obstacles at all.
+            if (vert.width > 0.0 && vert.height > 0.0) {
+                fixedRects_.push_back(
+                    {vert.x, vert.y, vert.x + vert.width, vert.y + vert.height});
+            }
             continue;
         }
         mov_.push_back(static_cast<std::uint32_t>(v));
         area_.push_back(vert.width * vert.height);
     }
-    posX_.assign(mov_.size(), 0.0);
-    posY_.assign(mov_.size(), 0.0);
+    res_.numMovable = mov_.size();
+    res_.numFixed = fixedRects_.size();
 
     std::vector<std::uint32_t> indexOf(nv, kNoIndex);
     for (std::size_t i = 0; i < mov_.size(); ++i) {
@@ -118,97 +147,92 @@ void RatioPlacer::Impl::build() {
             continue;
         }
         HyperNet n;
-        double fx0 = 0, fx1 = 0, fy0 = 0, fy1 = 0;
-        std::size_t nfix = 0;
         for (const std::size_t eid : vert.inEdges) {
             const Edge &e = graph_.getEdge(eid);
             const Vertex &pin = graph_.getVertex(e.source);
             if (pin.type != VertexType::Cell) {
                 continue;
             }
-            const bool isMovable = !pin.isFixed && !pin.isTerminal;
-            if (!isMovable || indexOf[e.source] == kNoIndex) {
-                const double x0 = pin.x + e.offsetX;
-                const double y0 = pin.y + e.offsetY;
-                const double x1 = x0 + pin.width;
-                const double y1 = y0 + pin.height;
-                if (nfix == 0) {
-                    fx0 = x0;
-                    fx1 = x1;
-                    fy0 = y0;
-                    fy1 = y1;
-                } else {
-                    fx0 = std::min(fx0, x0);
-                    fx1 = std::max(fx1, x1);
-                    fy0 = std::min(fy0, y0);
-                    fy1 = std::max(fy1, y1);
-                }
-                ++nfix;
+            if (indexOf[e.source] != kNoIndex) {
+                n.cells.push_back(indexOf[e.source]);
                 continue;
             }
-            n.cells.push_back(indexOf[e.source]);
+            // Bookshelf pin offsets are from the cell's centre.
+            const double px = pin.x + 0.5 * pin.width + e.offsetX;
+            const double py = pin.y + 0.5 * pin.height + e.offsetY;
+            if (n.fixedPins == 0) {
+                n.fx0 = n.fx1 = px;
+                n.fy0 = n.fy1 = py;
+            } else {
+                n.fx0 = std::min(n.fx0, px);
+                n.fx1 = std::max(n.fx1, px);
+                n.fy0 = std::min(n.fy0, py);
+                n.fy1 = std::max(n.fy1, py);
+            }
+            ++n.fixedPins;
         }
-        if (n.cells.size() < 2) {
-            continue;  // a single movable pin is not a net the cut can sever
+        // A net with one movable block still matters when it has fixed pins: it is
+        // what pulls that block towards a pad or macro.
+        if (n.cells.empty() || n.cells.size() + n.fixedPins < 2) {
+            continue;
         }
-        n.fx0 = fx0;
-        n.fx1 = fx1;
-        n.fy0 = fy0;
-        n.fy1 = fy1;
-        n.fixedPins = nfix;
         const std::uint32_t id = static_cast<std::uint32_t>(nets_.size());
         for (const std::uint32_t c : n.cells) {
             cellNets_[c].push_back(id);
         }
         nets_.push_back(std::move(n));
     }
-    // Per-cut net state, sized once here instead of being reallocated on every cut.
-    count0_.assign(nets_.size(), 0);
-    count1_.assign(nets_.size(), 0);
-    dummy_.assign(nets_.size(), 2);
-    weight_.assign(nets_.size(), 0.0);
-    seenGen_.assign(nets_.size(), 0);
+    res_.nets = nets_.size();
+
+    localGen_.assign(mov_.size(), 0);
+    localOf_.assign(mov_.size(), 0);
+    netGen_.assign(nets_.size(), 0);
+    anchor_.assign(nets_.size(), 0);
+    cnt_.assign(nets_.size(), {0, 0});
     gen_ = 0;
 
-    rows_ = db_.getRows();
-    die_ = placementDieBox(db_);
-    res_.numMovable = mov_.size();
-    res_.nets = nets_.size();
-    fixedVerts_.clear();
-    for (std::size_t v = 0; v < nv; ++v) {
-        const Vertex &vert = graph_.getVertex(v);
-        if (vert.type == VertexType::Cell && vert.isFixed && !vert.isTerminal) {
-            ++res_.numFixed;
-            fixedVerts_.push_back(static_cast<std::uint32_t>(v));
+    box_ = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
+            -std::numeric_limits<double>::max(), -std::numeric_limits<double>::max()};
+    for (const PlacementDB::RowInfo &r : db_.getRows()) {
+        for (const auto &sr : r.subrows) {
+            const AreaRect rr{sr.xlo(), r.coordinate, sr.xhi(r.pitch()), r.coordinate + r.height};
+            if (rr.x1 <= rr.x0) {
+                continue;
+            }
+            rowRects_.push_back(rr);
+            box_[0] = std::min(box_[0], rr.x0);
+            box_[1] = std::min(box_[1], rr.y0);
+            box_[2] = std::max(box_[2], rr.x1);
+            box_[3] = std::max(box_[3], rr.y1);
         }
     }
+    if (rowRects_.empty()) {
+        box_ = placementDieBox(db_);  // no rows: the die is all there is
+    }
+    posX_.assign(mov_.size(), 0.5 * (box_[0] + box_[2]));
+    posY_.assign(mov_.size(), 0.5 * (box_[1] + box_[3]));
 }
 
-double RatioPlacer::Impl::rowAreaIn(double x0, double /*y0*/, double x1, double /*y1*/) const {
-    double a = 0.0;
-    for (const PlacementDB::RowInfo &r : rows_) {
-        const double lo = std::max(x0, r.xlo());
-        const double hi = std::min(x1, r.xhi());
-        const double w = hi - lo;
-        if (w > 0.0) {
-            a += w * r.height;
+double RatioPlacer::Impl::freeAreaIn(double x0, double y0, double x1, double y1) const {
+    if (rowRects_.empty()) {
+        return std::max(0.0, (x1 - x0) * (y1 - y0));
+    }
+    double rows = 0.0;
+    for (const AreaRect &r : rowRects_) {
+        rows += overlap(r, x0, y0, x1, y1);
+    }
+    // Fixed blocks only take capacity where they sit on rows; the rows are a solid
+    // band in every benchmark here, so clipping to the rows' bounding box is what
+    // keeps a pad outside the rows from being charged against a region.
+    const double cx0 = std::max(x0, box_[0]), cy0 = std::max(y0, box_[1]);
+    const double cx1 = std::min(x1, box_[2]), cy1 = std::min(y1, box_[3]);
+    double fixed = 0.0;
+    if (cx1 > cx0 && cy1 > cy0) {
+        for (const AreaRect &f : fixedRects_) {
+            fixed += overlap(f, cx0, cy0, cx1, cy1);
         }
     }
-    return a;
-}
-
-double RatioPlacer::Impl::fixedAreaIn(double x0, double y0, double x1, double y1) const {
-    double a = 0.0;
-    // Only the fixed blocks, precomputed in build(). The previous scan over every
-    // graph vertex was O(design) per look-ahead, and a look-ahead runs (twice) on
-    // every retry of every cut.
-    for (const std::uint32_t v : fixedVerts_) {
-        const Vertex &vert = graph_.getVertex(v);
-        const double ox = std::max(0.0, std::min(x1, vert.x + vert.width) - std::max(x0, vert.x));
-        const double oy = std::max(0.0, std::min(y1, vert.y + vert.height) - std::max(y0, vert.y));
-        a += ox * oy;
-    }
-    return a;
+    return std::max(0.0, rows - fixed);
 }
 
 double RatioPlacer::Impl::movableArea(const std::vector<std::uint32_t> &cells) const {
@@ -219,269 +243,247 @@ double RatioPlacer::Impl::movableArea(const std::vector<std::uint32_t> &cells) c
     return a;
 }
 
-bool RatioPlacer::Impl::legalizable(const RatioRegion &r) const {
-    // Necessary condition, and the one that actually binds in practice: the
-    // region's rows have to hold the region's own cells plus whatever fixed
-    // blocks fall inside it. The paper uses a first-fit bin packing here, which
-    // also catches a case area cannot -- a region with no row tall enough for its
-    // blocks. This checks the area and, separately, the tallest block, which
-    // between them catch the two ways a cut produces a region nothing can be put
-    // into. It is weaker than a packing and is not claimed to be a substitute for
-    // one: a region that passes here can still fail to legalize, and the
-    // legalizer downstream is what settles it.
-    const double rows = rowAreaIn(r.x0, r.y0, r.x1, r.y1);
-    if (rows <= 0.0) {
-        return false;
-    }
-    const double need = movableArea(r.cells) + fixedAreaIn(r.x0, r.y0, r.x1, r.y1);
-    if (need > rows) {
-        return false;
-    }
-    double tallest = 0.0;
-    for (const std::uint32_t c : r.cells) {
-        tallest = std::max(tallest, graph_.getVertex(mov_[c]).height);
-    }
-    if (tallest > 0.0) {
-        const double rowH = rows_.empty() ? tallest : rows_.front().height;
-        if (tallest > rowH * 1.5) {
-            return false;
-        }
-    }
-    return true;
-}
-
-// The paper's net weight, for a cut at cutCoord splitting the region into centres
-// p1 and p2 (Section 2.1, Figures 2 and 3).
-//
-// A net wholly inside the region costs dist(p1,p2) if the cut severs it. A net
-// with pins outside costs its span across p1, p2 and those pins. The bias comes
-// from where the dummy lands: on the side that makes the net cheaper, so the
-// min-cut pulls the net's blocks that way instead of cutting it at all.
-double RatioPlacer::Impl::netWeight(const HyperNet &n, double p1, double p2,
-                                    std::uint8_t &dummySide) const {
-    dummySide = 2;  // 2 = no dummy
-    const double w = std::fabs(p2 - p1);
-    if (n.fixedPins == 0) {
-        return std::max(w, params_.minNetWeight);
-    }
-    const double cx = 0.5 * (p1 + p2);
-    // Cost of putting every block on side 1 versus side 2, with the outside pins
-    // where they are. The smaller one gets the dummy.
-    const auto cost = [&](double c) {
-        const double lo = std::min({c, n.fx0});
-        const double hi = std::max({c, n.fx1});
-        const double ylo = std::min({c, n.fy0});
-        const double yhi = std::max({c, n.fy1});
-        return (hi - lo) + (yhi - ylo);
-    };
-    // Full span with the blocks at the cut: the cost of severing.
-    double lo = std::min({p1, p2, n.fx0}), hi = std::max({p1, p2, n.fx1});
-    double ylo = std::min({p1, p2, n.fy0}), yhi = std::max({p1, p2, n.fy1});
-    const double cut = (hi - lo) + (yhi - ylo);
-    (void)cx;
-    const double c1 = cost(p1), c2 = cost(p2);
-    dummySide = (c1 <= c2) ? 0 : 1;
-    return std::max(cut, params_.minNetWeight);
-}
-
-bool RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cells, bool /*vertical*/,
-                                    double cutCoord, double maxImbalance,
-                                    std::vector<std::uint8_t> &side) {
+std::size_t RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cells,
+                                           bool vertical, double cut, double target, double tol,
+                                           std::vector<std::uint8_t> &side) {
     const std::size_t n = cells.size();
     side.assign(n, 0);
-    if (n < 2) {
-        return true;
-    }
-    // Local index for a movable, so the per-cut arrays are this region's size and
-    // not the design's.
-    std::unordered_map<std::uint32_t, std::uint32_t> local;
-    local.reserve(n * 2);
-    for (std::uint32_t i = 0; i < n; ++i) {
-        local[cells[i]] = i;
-    }
-
-    // Initial partition: balance by area, which is FM's own starting point and the
-    // state the imbalance cap is measured against.
-    double half = movableArea(cells) * 0.5;
-    double acc = 0.0;
-    for (std::uint32_t i = 0; i < n; ++i) {
-        acc += area_[cells[i]];
-        side[i] = (acc <= half) ? 0 : 1;
-    }
-    // The block nearest the cut goes to the emptier side, so the starting point
-    // already respects the cap rather than needing a repair pass.
-    double a0 = 0.0, a1 = 0.0;
-    for (std::uint32_t i = 0; i < n; ++i) {
-        (side[i] == 0 ? a0 : a1) += area_[cells[i]];
-    }
-    const double cap = 1.0 + std::max(0.0, maxImbalance);
-    if (a0 > 0.0 && a1 > 0.0 && std::max(a0 / a1, a1 / a0) > cap) {
-        std::uint32_t best = 0;
-        double bestD = 0.0;
-        for (std::uint32_t i = 0; i < n; ++i) {
-            const double d = std::fabs((side[i] == 0 ? a1 : a0) - area_[cells[i]]);
-            if (d < bestD) {
-                bestD = d;
-                best = i;
-            }
-        }
-        side[best] = (side[best] == 0) ? 1 : 0;
-    }
-
-    // Per-net bookkeeping for the pass. Only nets with a block in this region can
-    // affect it, and cellNets_ already lists each block's nets, so the region's nets
-    // are the union of its cells' nets. The previous scan of every net in the design
-    // -- and the four arrays sized to the design that came with it -- made every cut
-    // O(design), which dominated the run. seenGen_ stamps the nets of this cut, so
-    // the per-net arrays never need clearing between cuts.
     ++gen_;
-    std::vector<std::uint32_t> &regionNets = scratchNets_;
-    regionNets.clear();
     for (std::uint32_t i = 0; i < n; ++i) {
-        for (const std::uint32_t e : cellNets_[cells[i]]) {
-            if (seenGen_[e] == gen_) {
-                continue;
-            }
-            seenGen_[e] = gen_;
-            regionNets.push_back(e);
-        }
-    }
-    for (const std::uint32_t e : regionNets) {
-        std::uint32_t c0 = 0, c1 = 0;
-        for (const std::uint32_t c : nets_[e].cells) {
-            const auto it = local.find(c);
-            if (it == local.end()) {
-                continue;
-            }
-            (side[it->second] == 0 ? c0 : c1) += 1;
-        }
-        // A net reached from a region cell always has at least one block here, so
-        // count0_ + count1_ is nonzero and it needs a weight: a later move can sever
-        // a net that is presently wholly on one side.
-        count0_[e] = c0;
-        count1_[e] = c1;
-        std::uint8_t ds = 2;
-        weight_[e] = netWeight(nets_[e], cutCoord, cutCoord, ds);
-        dummy_[e] = ds;
+        localGen_[cells[i]] = gen_;
+        localOf_[cells[i]] = i;
     }
 
-    // FM gains, then one move at a time, always the best legal one.
-    std::vector<double> gain(n, 0.0);
-    std::vector<char> locked(n, 0);
-    const auto recompute = [&](std::uint32_t i) {
-        double g = 0.0;
+    // The region's nets, and where each one's outside pins pull. A pin outside the
+    // region -- a fixed pin, or a movable already sent to another region -- is a
+    // block locked on its side of the cut (the paper's dummy node). A net with
+    // outside pins on both sides is cut whatever this partition does, so it is
+    // left out of the gains entirely.
+    regionNets_.clear();
+    for (std::uint32_t i = 0; i < n; ++i) {
         for (const std::uint32_t e : cellNets_[cells[i]]) {
-            if (count0_[e] + count1_[e] == 0) {
+            if (netGen_[e] == gen_) {
                 continue;
             }
-            const bool from0 = side[i] == 0;
-            const std::uint32_t from = from0 ? count0_[e] : count1_[e];
-            const std::uint32_t to = from0 ? count1_[e] : count0_[e];
-            double w = weight_[e];
-            if (dummy_[e] != 2) {
-                // The dummy is a pin on one side, so it counts there.
-                if (dummy_[e] == 0) {
-                    // side 0 already carries it
+            netGen_[e] = gen_;
+            regionNets_.push_back(e);
+            const HyperNet &net = nets_[e];
+            std::uint8_t mask = 0;
+            for (const std::uint32_t c : net.cells) {
+                if (localGen_[c] == gen_) {
+                    continue;
                 }
+                const double p = vertical ? posX_[c] : posY_[c];
+                mask |= (p < cut) ? 1 : (p > cut) ? 2 : 0;
             }
-            if (from <= 1) {
-                g += w;  // this was the last block on its side: the net un-cuts
-            } else {
-                g += 0.0;  // the net stays cut
+            if (net.fixedPins > 0) {
+                const double lo = vertical ? net.fx0 : net.fy0;
+                const double hi = vertical ? net.fx1 : net.fy1;
+                mask |= (hi < cut) ? 1 : (lo > cut) ? 2 : 3;
             }
-            if (to == 0) {
-                g -= w;  // the net was not cut and now becomes cut
+            anchor_[e] = mask;
+        }
+    }
+
+    // Initial partition: fill side 0 up to the target in netlist order. FM's
+    // passes are what make it a min-cut; this only has to be balanced.
+    double a0 = 0.0, total = 0.0;
+    for (std::uint32_t i = 0; i < n; ++i) {
+        total += area_[cells[i]];
+    }
+    for (std::uint32_t i = 0; i < n; ++i) {
+        if (a0 + 0.5 * area_[cells[i]] <= target) {
+            a0 += area_[cells[i]];
+            side[i] = 0;
+        } else {
+            side[i] = 1;
+        }
+    }
+
+    const auto gainOf = [&](std::uint32_t i) {
+        const std::uint8_t s = side[i], t = 1 - s;
+        int g = 0;
+        for (const std::uint32_t e : cellNets_[cells[i]]) {
+            if (anchor_[e] == 3) {
+                continue;
+            }
+            if (cnt_[e][s] == 1) {
+                ++g;  // the last pin on its side: moving it un-cuts the net
+            }
+            if (cnt_[e][t] == 0) {
+                --g;  // the net was whole on this side and moving it cuts it
             }
         }
         return g;
     };
-    for (std::uint32_t i = 0; i < n; ++i) {
-        gain[i] = recompute(i);
-    }
+    const auto dev = [&](double a) { return std::fabs(a - target); };
 
-    double cur0 = 0.0, cur1 = 0.0;
-    for (std::uint32_t i = 0; i < n; ++i) {
-        (side[i] == 0 ? cur0 : cur1) += area_[cells[i]];
-    }
-    const double total = cur0 + cur1;
+    std::vector<int> gain(n, 0);
+    std::vector<char> locked(n, 0);
+    std::vector<std::uint32_t> moves;
+    moves.reserve(n);
+    using Entry = std::pair<int, std::uint32_t>;
 
-    std::deque<std::uint32_t> work(n);
-    std::iota(work.begin(), work.end(), 0u);
+    for (int pass = 0; pass < kMaxPasses; ++pass) {
+        for (const std::uint32_t e : regionNets_) {
+            cnt_[e] = {static_cast<std::uint32_t>((anchor_[e] & 1) ? 1 : 0),
+                       static_cast<std::uint32_t>((anchor_[e] & 2) ? 1 : 0)};
+        }
+        for (std::uint32_t i = 0; i < n; ++i) {
+            for (const std::uint32_t e : cellNets_[cells[i]]) {
+                ++cnt_[e][side[i]];
+            }
+        }
+        std::priority_queue<Entry> heap[2];
+        for (std::uint32_t i = 0; i < n; ++i) {
+            gain[i] = gainOf(i);
+            locked[i] = 0;
+            heap[side[i]].push({gain[i], i});
+        }
 
-    while (!work.empty()) {
-        std::size_t best = work.size();
-        double bestGain = 0.0;
-        for (const std::uint32_t i : work) {
-            if (locked[i]) {
-                continue;
-            }
-            const double a = side[i] == 0 ? cur0 : cur1;
-            const double b = side[i] == 0 ? cur1 : cur0;
-            const double na = a - area_[cells[i]], nb = b + area_[cells[i]];
-            if (na > 0.0 && nb > 0.0 && std::max(na / nb, nb / na) > cap) {
-                continue;  // would break the balance the ratio partitioner is for
-            }
-            if (best == work.size() || gain[i] > bestGain) {
-                bestGain = gain[i];
-                best = i;
-            }
-        }
-        if (best == work.size()) {
-            break;  // every remaining move breaks the cap
-        }
-        const std::uint32_t i = static_cast<std::uint32_t>(best);
-        for (auto it = work.begin(); it != work.end(); ++it) {
-            if (*it == i) {
-                work.erase(it);
-                break;
-            }
-        }
-        locked[i] = 1;
-        if (side[i] == 0) {
-            cur0 -= area_[cells[i]];
-            cur1 += area_[cells[i]];
-            side[i] = 1;
-        } else {
-            cur1 -= area_[cells[i]];
-            cur0 += area_[cells[i]];
-            side[i] = 0;
-        }
-        for (const std::uint32_t e : cellNets_[cells[i]]) {
-            if (side[i] == 0) {
-                ++count0_[e];
-                --count1_[e];
-            } else {
-                ++count1_[e];
-                --count0_[e];
-            }
-        }
-        for (const std::uint32_t e : cellNets_[cells[i]]) {
-            for (const std::uint32_t c : nets_[e].cells) {
-                const auto it2 = local.find(c);
-                if (it2 == local.end() || locked[it2->second]) {
+        moves.clear();
+        int cum = 0, bestCum = 0;
+        std::size_t bestLen = 0;
+        double bestDev = dev(a0);
+        const double startA0 = a0;
+        double cur = a0;
+        while (true) {
+            // The best unlocked block on each side; stale heap entries (locked, or
+            // pushed before a later gain change) are discarded on the way.
+            int pick = -1;
+            int pickGain = std::numeric_limits<int>::min();
+            for (int s = 0; s < 2; ++s) {
+                auto &h = heap[s];
+                while (!h.empty() &&
+                       (locked[h.top().second] || gain[h.top().second] != h.top().first ||
+                        side[h.top().second] != s)) {
+                    h.pop();
+                }
+                if (h.empty()) {
                     continue;
                 }
-                gain[it2->second] = recompute(it2->second);
+                const std::uint32_t i = h.top().second;
+                const double na = (s == 0) ? cur - area_[cells[i]] : cur + area_[cells[i]];
+                // A move may leave the window only towards the target; with the
+                // window wider than two blocks, at most one side is ever blocked.
+                if (dev(na) > tol && dev(na) >= dev(cur)) {
+                    continue;
+                }
+                if (h.top().first > pickGain) {
+                    pickGain = h.top().first;
+                    pick = s;
+                }
             }
+            if (pick < 0) {
+                break;
+            }
+            const std::uint32_t i = heap[pick].top().second;
+            heap[pick].pop();
+            const std::uint8_t s = side[i], t = 1 - s;
+            locked[i] = 1;
+            side[i] = t;
+            cur += (s == 0) ? -area_[cells[i]] : area_[cells[i]];
+            cum += pickGain;
+            moves.push_back(i);
+
+            for (const std::uint32_t e : cellNets_[cells[i]]) {
+                if (anchor_[e] == 3) {
+                    continue;
+                }
+                // Only a net whose counts cross 0 or 1 changes anyone's gain (the
+                // usual FM critical-net test), so large nets are rarely rescanned.
+                const bool critical = cnt_[e][t] <= 1 || cnt_[e][s] <= 2;
+                --cnt_[e][s];
+                ++cnt_[e][t];
+                if (!critical) {
+                    continue;
+                }
+                for (const std::uint32_t c : nets_[e].cells) {
+                    if (localGen_[c] != gen_) {
+                        continue;
+                    }
+                    const std::uint32_t j = localOf_[c];
+                    if (locked[j]) {
+                        continue;
+                    }
+                    const int g = gainOf(j);
+                    if (g != gain[j]) {
+                        gain[j] = g;
+                        heap[side[j]].push({g, j});
+                    }
+                }
+            }
+            if (dev(cur) <= tol &&
+                (cum > bestCum || (cum == bestCum && dev(cur) < bestDev))) {
+                bestCum = cum;
+                bestLen = moves.size();
+                bestDev = dev(cur);
+            }
+        }
+        // Keep the best prefix of the pass, undo the rest.
+        for (std::size_t k = moves.size(); k > bestLen; --k) {
+            const std::uint32_t i = moves[k - 1];
+            cur += (side[i] == 0) ? -area_[cells[i]] : area_[cells[i]];
+            side[i] = 1 - side[i];
+        }
+        a0 = cur;
+        (void)startA0;
+        if (bestLen == 0) {
+            break;  // no improving prefix: a further pass would find the same
+        }
+    }
+
+    // Cut size of the result, for the trace.
+    for (const std::uint32_t e : regionNets_) {
+        cnt_[e] = {static_cast<std::uint32_t>((anchor_[e] & 1) ? 1 : 0),
+                   static_cast<std::uint32_t>((anchor_[e] & 2) ? 1 : 0)};
+    }
+    for (std::uint32_t i = 0; i < n; ++i) {
+        for (const std::uint32_t e : cellNets_[cells[i]]) {
+            ++cnt_[e][side[i]];
+        }
+    }
+    std::size_t cutNets = 0;
+    for (const std::uint32_t e : regionNets_) {
+        if (anchor_[e] != 3 && cnt_[e][0] > 0 && cnt_[e][1] > 0) {
+            ++cutNets;
         }
     }
     (void)total;
-    return true;
+    return cutNets;
 }
 
-void RatioPlacer::Impl::writeFrame(const RatioRegion &/*r*/, std::size_t depth,
-                                   const char *note) const {
-    // Frames go through the run's animator, the same sink every other stage uses,
-    // so the count is bounded by the animation budget instead of being one
-    // full-design SVG per accepted cut. The recursion accepts thousands of cuts,
-    // and a still per cut serialised the whole netlist each time -- tens of GB of
-    // writes that came to dominate the run. When the animator is not armed (no
-    // plot directory, or KTPLACE_ANIM=0) this is a no-op, exactly as it is for the
-    // analytical placer's frames.
+void RatioPlacer::Impl::setRegionCentre(const RatioRegion &r) {
+    const double cx = 0.5 * (r.x0 + r.x1), cy = 0.5 * (r.y0 + r.y1);
+    for (const std::uint32_t c : r.cells) {
+        posX_[c] = cx;
+        posY_[c] = cy;
+    }
+}
+
+void RatioPlacer::Impl::placeLeaf(const RatioRegion &r) {
+    // Spread a leaf's blocks over a grid in its region rather than stacking them on
+    // its centre: the legalizer then moves each a short way instead of fanning a
+    // pile of dozens out of one point.
+    const std::size_t k = r.cells.size();
+    if (k == 0) {
+        return;
+    }
+    const double w = std::max(r.x1 - r.x0, 1e-9), h = std::max(r.y1 - r.y0, 1e-9);
+    const std::size_t cols =
+        std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil(std::sqrt(k * w / h))));
+    const std::size_t rowsN = (k + cols - 1) / cols;
+    for (std::size_t q = 0; q < k; ++q) {
+        const std::size_t cx = q % cols, cy = q / cols;
+        posX_[r.cells[q]] = r.x0 + w * (static_cast<double>(cx) + 0.5) / static_cast<double>(cols);
+        posY_[r.cells[q]] = r.y0 + h * (static_cast<double>(cy) + 0.5) / static_cast<double>(rowsN);
+    }
+}
+
+void RatioPlacer::Impl::writeFrame(std::size_t depth, const char *note) const {
+    // Frames go through the run's animator, the same budgeted sink every other
+    // stage uses; past its cap record() is a no-op, so do not build the arrays.
     PlacementAnimator &anim = PlacementAnimator::instance();
-    // Past the cap record() is a no-op, so do not build the coordinate arrays at
-    // all: the recursion offers a frame for every cut, most of which are over
-    // budget and would otherwise pay an O(vertices) copy each.
     if (!anim.enabled() || anim.capped()) {
         return;
     }
@@ -492,14 +494,11 @@ void RatioPlacer::Impl::writeFrame(const RatioRegion &/*r*/, std::size_t depth,
         ys[v] = static_cast<float>(graph_.getVertex(v).y);
     }
     for (std::size_t i = 0; i < mov_.size(); ++i) {
-        xs[mov_[i]] = static_cast<float>(posX_[i]);
-        ys[mov_[i]] = static_cast<float>(posY_[i]);
+        const Vertex &v = graph_.getVertex(mov_[i]);
+        xs[mov_[i]] = static_cast<float>(posX_[i] - 0.5 * v.width);
+        ys[mov_[i]] = static_cast<float>(posY_[i] - 0.5 * v.height);
     }
-    const std::array<double, 4> box{die_[0], die_[1], die_[2], die_[3]};
-    // Not mandatory: the recursion offers one frame per accepted cut, which is far
-    // denser than the animator's budget. Left to the animator's thinning, the
-    // animation spreads those frames over the whole run instead of spending the
-    // budget in the first few levels and dropping legalization and detail placement.
+    const std::array<double, 4> box = placementDieBox(db_);
     anim.record(graph_, xs, ys, box, depth, params_.maxLevels, 0.0, 0.0, 0.0, note, fences_,
                 /*mandatory=*/false);
 }
@@ -507,114 +506,88 @@ void RatioPlacer::Impl::writeFrame(const RatioRegion &/*r*/, std::size_t depth,
 void RatioPlacer::Impl::divide(RatioRegion r) {
     res_.maxDepth = std::max(res_.maxDepth, r.depth);
     if (r.cells.size() <= params_.targetLeafCells || r.depth >= params_.maxLevels) {
-        res_.minLeafCells =
-            (res_.minLeafCells == 0) ? r.cells.size() : std::min(res_.minLeafCells, r.cells.size());
-        // A leaf puts its blocks at the region's centre, which is where the
-        // min-cut assumed they were and where the wirelength estimate was formed.
-        const double cx = 0.5 * (r.x0 + r.x1);
-        const double cy = 0.5 * (r.y0 + r.y1);
-        for (const std::uint32_t c : r.cells) {
-            posX_[c] = cx;
-            posY_[c] = cy;
+        if (!r.cells.empty()) {
+            res_.minLeafCells = (res_.minLeafCells == 0)
+                                    ? r.cells.size()
+                                    : std::min(res_.minLeafCells, r.cells.size());
         }
+        placeLeaf(r);
         return;
     }
 
-    // Cut the longer side, so sub-regions do not degenerate into slivers.
+    // Cut the longer side through its middle, so sub-regions do not degenerate
+    // into slivers.
     const double w = r.x1 - r.x0;
     const double h = r.y1 - r.y0;
     const bool vertical = (w >= h);
+    const double cut = vertical ? r.x0 + 0.5 * w : r.y0 + 0.5 * h;
 
-    // The sub-regions spread to fill the region's rows and whitespace, so their
-    // areas are only compared against each other and against the region's area
-    // through the imbalance cap; the region's own area is not needed below.
-    const double regionArea = w * h;
-    (void)regionArea;
+    RatioRegion r0 = r, r1 = r;
+    r0.depth = r1.depth = r.depth + 1;
+    (vertical ? r0.x1 : r0.y1) = cut;
+    (vertical ? r1.x0 : r1.y0) = cut;
+    r0.cells.clear();
+    r1.cells.clear();
+
+    const double free0 = freeAreaIn(r0.x0, r0.y0, r0.x1, r0.y1);
+    const double free1 = freeAreaIn(r1.x0, r1.y0, r1.x1, r1.y1);
+    if (free0 <= 0.0 || free1 <= 0.0) {
+        // One half has no room at all (it is all macro, or off the rows): there is
+        // nothing to partition, so the region just shrinks to the other half.
+        RatioRegion &keep = (free0 > 0.0) ? r0 : r1;
+        if (free0 <= 0.0 && free1 <= 0.0) {
+            placeLeaf(r);
+            return;
+        }
+        keep.cells = std::move(r.cells);
+        setRegionCentre(keep);
+        divide(std::move(keep));
+        return;
+    }
+
+    // Whitespace distribution (Section 2.2): each side gets cell area in
+    // proportion to the room it has, so both halves end up equally utilised. A
+    // fixed 50/50 split, whatever the halves can hold, is what overfills the half
+    // with the macro in it.
+    const double total = movableArea(r.cells);
+    const double target = total * free0 / (free0 + free1);
+    double maxCell = 0.0;
+    for (const std::uint32_t c : r.cells) {
+        maxCell = std::max(maxCell, area_[c]);
+    }
+    double tol = std::max(kBalanceSlack * total, 2.0 * maxCell);
 
     std::vector<std::uint8_t> side;
-    RatioRegion r0 = r, r1 = r;
-    double cut = 0.0;
-    bool accepted = false;
-
-    for (std::size_t attempt = 0; attempt <= params_.maxRatioRetries && !accepted; ++attempt) {
-        // Whitespace distribution (Section 2.2). The imbalance cap is not a
-        // constant: it is loosened until both sub-regions can hold their share.
-        // Starting from even and widening is the paper's "move the cut-line
-        // toward the partition with a smaller utilization ratio", expressed as a
-        // cap on the area ratio rather than as a cut position.
-        double cap = attempt * 0.25;  // 0 = perfectly balanced, widening per retry
-
-        if (vertical) {
-            cut = r.x0 + 0.5 * w;
-        } else {
-            cut = r.y0 + 0.5 * h;
-        }
-        if (params_.verbose) {
-            ktlog.trace("  ratio attempt depth {}: {} cells, cap {:.2f}", r.depth,
-                        r.cells.size(), cap);
-        }
-        if (!bipartition(r.cells, vertical, cut, cap, side)) {
-            continue;
-        }
-
-        r0 = r;
-        r1 = r;
-        r0.depth = r.depth + 1;
-        r1.depth = r.depth + 1;
-        if (vertical) {
-            r0.x1 = cut;
-            r1.x0 = cut;
-        } else {
-            r0.y1 = cut;
-            r1.y0 = cut;
-        }
+    std::size_t cutNets = 0;
+    for (std::size_t attempt = 0;; ++attempt) {
+        cutNets = bipartition(r.cells, vertical, cut, target, tol, side);
         r0.cells.clear();
         r1.cells.clear();
         for (std::size_t i = 0; i < r.cells.size(); ++i) {
             (side[i] == 0 ? r0.cells : r1.cells).push_back(r.cells[i]);
         }
-        // Empty sub-regions cannot be legalized and cannot be recursed into.
-        if (r0.cells.empty() || r1.cells.empty()) {
-            ++res_.ratioRetries;
-            ktlog.trace("  ratio cut depth {}: {} cells, cap {:.2f}: one side empty, retrying",
-                        r.depth, r.cells.size(), cap);
-            continue;
+        // Look-ahead (Section 2.3): a side the cut leaves fuller than it can hold
+        // is one the legalizer would have to empty. Unless the region as a whole is
+        // overfull -- then no cut can help -- retry with a tighter window.
+        const double a0 = movableArea(r0.cells), a1 = total - a0;
+        const bool fits = (a0 <= free0 && a1 <= free1) || total > free0 + free1;
+        if (fits || attempt >= params_.maxRatioRetries || tol <= 2.0 * maxCell) {
+            break;
         }
-        // Look-ahead (Section 2.3): before accepting the cut, ask whether either
-        // side could be legalized at all.
-        if (!legalizable(r0) || !legalizable(r1)) {
-            ++res_.ratioRetries;
-            ktlog.trace("  ratio cut depth {}: {} cells, cap {:.2f}: look-ahead unlegalizable, "
-                        "retrying",
-                        r.depth, r.cells.size(), cap);
-            continue;
-        }
-        accepted = true;
-        // One line per accepted cut: the recursion's heartbeat. The trace file is
-        // what the web console streams into its trace pane, so it is written
-        // whether or not -v is set (verbose only additionally prints trace lines
-        // to stderr, just as it does for every stage's trace).
-        ktlog.trace("  ratio cut depth {}: {} cells -> {} / {}, cap {:.2f}, {} retries so far",
-                    r.depth, r.cells.size(), r0.cells.size(), r1.cells.size(), cap,
-                    res_.ratioRetries);
-    }
-
-    if (!accepted) {
-        // Nothing legalizable was found: keep the region's blocks together at its
-        // centre and let the recursion above, and the legalizer after, deal with
-        // it. A region that cannot be cut legally is not a reason to stop.
-        ktlog.trace("  ratio region depth {}: {} cells kept together (no legalizable cut in {} "
-                    "attempts)",
-                    r.depth, r.cells.size(), params_.maxRatioRetries + 1);
-        for (const std::uint32_t c : r.cells) {
-            posX_[c] = 0.5 * (r.x0 + r.x1);
-            posY_[c] = 0.5 * (r.y0 + r.y1);
-        }
-        return;
+        ++res_.ratioRetries;
+        tol = std::max(0.5 * tol, 2.0 * maxCell);
     }
 
     ++res_.cuts;
-    writeFrame(r, r.depth, "ratio bipartition");
+    // One line per accepted cut: the recursion's heartbeat. The trace file is what
+    // the web console streams into its trace pane, so it is written whether or not
+    // -v is set.
+    ktlog.trace("  ratio cut depth {}: {} cells -> {} / {} (target {:.1f}%), {} nets cut",
+                r.depth, r.cells.size(), r0.cells.size(), r1.cells.size(),
+                100.0 * free0 / (free0 + free1), cutNets);
+    setRegionCentre(r0);
+    setRegionCentre(r1);
+    writeFrame(r.depth, "ratio bipartition");
     divide(std::move(r0));
     divide(std::move(r1));
 }
@@ -626,58 +599,43 @@ RatioPlaceResult RatioPlacer::Impl::place(const RatioPlaceParams &params) {
     if (mov_.empty()) {
         return res_;
     }
-    // Same reasoning as the cut lines: the trace file is the web console's live
-    // view, so the bookends of the recursion are written even without -v.
-    ktlog.trace("  ratio build: {} movable cells, {} fixed, {} hypernets", res_.numMovable,
-                res_.numFixed, res_.nets);
+    ktlog.trace("  ratio build: {} movable cells, {} fixed blocks, {} hypernets",
+                res_.numMovable, res_.numFixed, res_.nets);
 
-    // The paper starts every block at the centre of the chip: with nothing
-    // decided, that is the only placement that implies no cut, and the whole
-    // recursion then reads the solution out of the cuts.
+    // The paper starts every block at the centre of the placement area: with
+    // nothing decided, that is the only placement that implies no cut, and the
+    // whole recursion then reads the solution out of the cuts.
     RatioRegion root;
-    root.x0 = die_[0];
-    root.y0 = die_[1];
-    root.x1 = die_[2];
-    root.y1 = die_[3];
+    root.x0 = box_[0];
+    root.y0 = box_[1];
+    root.x1 = box_[2];
+    root.y1 = box_[3];
     root.cells.resize(mov_.size());
     std::iota(root.cells.begin(), root.cells.end(), 0u);
-    for (std::size_t i = 0; i < mov_.size(); ++i) {
-        posX_[i] = 0.5 * (root.x0 + root.x1);
-        posY_[i] = 0.5 * (root.y0 + root.y1);
-    }
-
     divide(std::move(root));
 
+    // posX_/posY_ are centres; the database holds lower-left corners, kept inside
+    // the placement area.
     for (std::size_t i = 0; i < mov_.size(); ++i) {
         const Vertex &v = graph_.getVertex(mov_[i]);
-        db_.setCellPosition(mov_[i], posX_[i], std::min(posY_[i], die_[3] - v.height));
+        const double x = std::clamp(posX_[i] - 0.5 * v.width, box_[0],
+                                    std::max(box_[0], box_[2] - v.width));
+        const double y = std::clamp(posY_[i] - 0.5 * v.height, box_[1],
+                                    std::max(box_[1], box_[3] - v.height));
+        db_.setCellPosition(mov_[i], x, y);
     }
 
-    // HPWL over the answer, pin to pin, so it is the same quantity the rest of the
-    // flow reports and the runs can be compared.
+    // HPWL over the answer, from cell centres and fixed pin points: the
+    // partitioner's own estimate. The flow reports the pin-exact figure after
+    // legalization.
     double total = 0.0;
     for (const HyperNet &n : nets_) {
-        if (n.cells.size() < 2) {
-            continue;
-        }
-        double ax = 0, bx = 0, ay = 0, by = 0;
-        bool first = true;
+        double ax = std::numeric_limits<double>::max(), bx = -ax, ay = ax, by = -ax;
         for (const std::uint32_t c : n.cells) {
-            const Vertex &v = graph_.getVertex(mov_[c]);
-            const double x0 = posX_[c], y0 = posY_[c];
-            const double x1 = x0 + v.width, y1 = y0 + v.height;
-            if (first) {
-                ax = x0;
-                bx = x1;
-                ay = y0;
-                by = y1;
-                first = false;
-            } else {
-                ax = std::min(ax, x0);
-                bx = std::max(bx, x1);
-                ay = std::min(ay, y0);
-                by = std::max(by, y1);
-            }
+            ax = std::min(ax, posX_[c]);
+            bx = std::max(bx, posX_[c]);
+            ay = std::min(ay, posY_[c]);
+            by = std::max(by, posY_[c]);
         }
         if (n.fixedPins > 0) {
             ax = std::min(ax, n.fx0);
@@ -709,15 +667,14 @@ void reportNtuPlace1(const RatioPlaceResult &r) {
     ktReportTable t("NTUplace1 solver results");
     t.setHeaders({"metric", "value"});
     t.addRow({"movable cells", fmt::format("{}", r.numMovable)});
-    t.addRow({"fixed cells", fmt::format("{}", r.numFixed)});
+    t.addRow({"fixed blocks", fmt::format("{}", r.numFixed)});
     t.addRow({"hypergraph nets", fmt::format("{}", r.nets)});
     t.addRow({"cuts accepted", fmt::format("{}", r.cuts)});
-    t.addRow({"ratio retries", fmt::format("{}", r.ratioRetries)});
+    t.addRow({"look-ahead retries", fmt::format("{}", r.ratioRetries)});
     t.addRow({"retries per cut", fmt::format("{:.3}", r.meanImbalance)});
     t.addRow({"recursion depth reached", fmt::format("{}", r.maxDepth)});
     t.addRow({"smallest leaf", fmt::format("{}", r.minLeafCells)});
-    t.addRow({"HPWL (pre-legalization)", fmt::format("{:.6}", r.hpwlFinal)});
-    t.addRow({"paper reference (adaptec1)", "44800000"});
+    t.addRow({"HPWL estimate (pre-legalization)", fmt::format("{:.6}", r.hpwlFinal)});
     t.emit();
 }
 }  // namespace ktplace
