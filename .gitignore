@@ -66,6 +66,8 @@ logs/
 
 # Local editor tooling (kept out of the repo)
 .cursorrules
+# Agent instructions are for whoever runs an agent here, not for every contributor.
+AGENTS.md
 # Development notes are ignored; the curated write-ups are tracked.
 docs/*
 !docs/simpl.md
