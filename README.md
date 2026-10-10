@@ -18,6 +18,10 @@ with exactly the packages CI installs (g++ 13, oneTBB, Boost, fmt,
 clang-format 18), so a build, a test run or a placement behaves the same on
 every machine. All it needs is Docker (Docker Desktop on macOS and Windows).
 
+> **Step-by-step guide:** [docs/docker.md](docs/docker.md) -- starting the
+> environment, running commands in it (shell, one-off, the web console's
+> Terminal panel, the API), settings and troubleshooting.
+
 **One shot: the whole environment.** `scripts/devenv.sh up` starts both
 containers -- the development container below and the web console further down
 -- waits for SSH, and compiles `build/bin/ktplace` inside. That single binary
@@ -151,7 +155,8 @@ Around that:
   container and streams their output -- handy for `ktplace <design> -a simpl`
   with custom flags, or poking at `runs/<id>/`. It is off by default, and
   compose turns it on with `KTPLACE_WEB_ALLOW_EXEC=1` because the published port
-  is loopback-only. It runs as the server's user in the runtime image (python3
+  is loopback-only and the server refuses requests from other sites or host
+  names (see [docs/docker.md](docs/docker.md#calling-the-consoles-api)). It runs as the server's user in the runtime image (python3
   and the engine, no compiler), so builds still belong in the dev container.
 
 The console carries no engine of its own: it runs the binary in the build
