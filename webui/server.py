@@ -625,6 +625,11 @@ def summary(run: Run) -> dict:
         ("offRow", "cells out of rows"),
     )
     result: dict = {}
+    # The engine reports each stage's own HPWL now; the final one is the last
+    # "HPWL after" row (detailed placement). Runs from before that change carry
+    # an "HPWL detailed" line instead, which pairs already looks for.
+    if not any("hpwl detailed" in ln.lower() for ln in lines):
+        pairs = tuple((k, "HPWL after" if k == "hpwl" else n) for k, n in pairs)
     for key, needle in pairs:
         vals = []
         for ln in lines:
