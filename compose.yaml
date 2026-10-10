@@ -50,9 +50,21 @@ services:
     ports:
       - "127.0.0.1:${KTPLACE_WEB_PORT:-8080}:8080"
     volumes:
+      # The engine: the same build volume the dev container writes, so the
+      # console runs the binary that tree compiled -- one compile, shared by
+      # the shell and the browser, not one per image.
+      - build:/ktplace/build
+      # The host's whole benchmark suite, read-only, so every design is
+      # selectable rather than only the vendored adaptec1. A standalone
+      # `docker run` keeps the vendored copy; this only adds to it.
+      - ./benchmark:/ktplace/benchmark:ro
       # Runs survive `down`/restarts; the server also adopts existing runs on
       # start, so history persists.
       - web-runs:/ktplace/runs
+    environment:
+      # The in-page command runner is a shell in this container, so it is off by
+      # default; on here because the published port is loopback-only.
+      KTPLACE_WEB_ALLOW_EXEC: "1"
     restart: unless-stopped
 
 volumes:

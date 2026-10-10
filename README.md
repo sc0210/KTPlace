@@ -118,8 +118,41 @@ host's own architecture -- arm64 on Apple Silicon, x86-64 otherwise.
 placement, watch the transcript stream live, then open the gallery, final image
 and log the run produced. Everything is served from the container -- the console
 is a Python stdlib HTTP server on a small runtime image, and the results are the
-engine's own output (`plots/index.html`, `final.png`, `placed.pl`,
-`ktplace.log`), not a re-implementation of it.
+engine's own output (`plots/index.html`, `final.png`, `placed.pl`, `ktplace.log`,
+`ktplace_trace.log`), not a re-implementation of it.
+
+While a run is going the page carries a phase bar (load, placement,
+legalization, detailed placement, output) and, under it, a live heartbeat -- the
+SVG frames the engine streams, the child's CPU and resident memory, and how long
+the output has been quiet -- so a long but healthy solve reads as working rather
+than hung. A machine panel shows the container's CPU load and memory, which is
+what the placement actually runs on. Ticking *verbose* streams the engine's
+per-iteration `ktplace_trace.log` below the transcript.
+
+Around that:
+
+- **Every design, not just one.** The console scans `/ktplace/benchmark`, and
+  compose mounts the repository's whole suite there read-only, so all of
+  ICCAD04, ISPD02, ISPD_2005 and ISPD_2015 are selectable behind the filter box.
+  A standalone `docker run` keeps the vendored `adaptec1`.
+- **Environment overrides.** The engine tunes from `KTPLACE_*` variables rather
+  than flags, so the *Environment overrides* box takes `KEY=VALUE` lines
+  (`KTPLACE_SIMPL_ITERS=25`, `KTPLACE_SIMPL_SEED=1`, ...). The server keeps only
+  `KTPLACE_`-namespaced pairs whose value is shell- and environment-safe; the
+  rest are dropped, and what survives is recorded in the run's `request.json`.
+- **Export.** Each run has one-click downloads for the transcript, trace,
+  `placed.pl` and `request.json`, plus an *everything (.zip)* that bundles those
+  with `final.png` and a `summary.json` -- deliberately without the frame
+  gallery, which can run to hundreds of megabytes.
+- **History and comparison.** Every run is listed with its headline numbers
+  (status, elapsed, HPWL, verdict) side by side; runs can be labeled and deleted
+  from the list or the table.
+- **A command runner.** The *Terminal* panel runs commands in the console
+  container and streams their output -- handy for `ktplace <design> -a simpl`
+  with custom flags, or poking at `runs/<id>/`. It is off by default, and
+  compose turns it on with `KTPLACE_WEB_ALLOW_EXEC=1` because the published port
+  is loopback-only. It runs as the server's user in the runtime image (python3
+  and the engine, no compiler), so builds still belong in the dev container.
 
 The console carries no engine of its own: it runs the binary in the build
 volume the dev container compiles, so shell and browser see one ktplace rather
@@ -154,7 +187,8 @@ loopback-only, so the console is visible only from this machine; inside the
 container the server listens on `0.0.0.0` with the port from
 `KTPLACE_WEB_PORT` (8080), and `KTPLACE_WEB_HOST` overrides the bind address.
 Mount other benchmark suites at `/ktplace/benchmark` to make them selectable,
-exactly as with the `run` image.
+exactly as with the `run` image. `KTPLACE_WEB_ALLOW_EXEC=1` enables the command
+runner when the console is run by hand.
 
 A successful build also writes two environment helpers into the repository
 root. Source the one for your shell and the engine is callable by name:
