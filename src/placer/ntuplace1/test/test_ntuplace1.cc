@@ -15,7 +15,6 @@
 #include "util/kt_log.h"
 
 #include <boost/test/included/unit_test.hpp>
-
 #include <string>
 #include <vector>
 
@@ -28,7 +27,7 @@ constexpr int kRows = 10;
 constexpr double kWidth = 100.0;
 
 /// kRows rows of kWidth unit sites, stacked from y = 0.
-void addRows(PlacementDB &db) {
+void addRows(ktDM &db) {
     for (int r = 0; r < kRows; ++r) {
         const std::size_t row = db.addRow(r * kRowHeight, kRowHeight, 1.0, 1.0);
         (void)db.addSubrow(row, 0.0, kWidth);
@@ -37,15 +36,14 @@ void addRows(PlacementDB &db) {
 
 /// A fixed block. Bookshelf marks fixed macros and pads as terminals, which is
 /// exactly the case the placer once ignored, so these are terminals too.
-std::size_t addFixed(PlacementDB &db, const std::string &name, double x, double y, double w,
-                     double h) {
+std::size_t addFixed(ktDM &db, const std::string &name, double x, double y, double w, double h) {
     const std::size_t id = db.addCell(name, w, h, /*isTerminal=*/true);
     db.setCellPosition(id, x, y);
     db.setCellFixed(id, true);
     return id;
 }
 
-std::vector<std::size_t> addCells(PlacementDB &db, const std::string &prefix, int n) {
+std::vector<std::size_t> addCells(ktDM &db, const std::string &prefix, int n) {
     std::vector<std::size_t> ids;
     for (int i = 0; i < n; ++i) {
         ids.push_back(db.addCell(prefix + std::to_string(i), 1.0, kRowHeight));
@@ -53,10 +51,21 @@ std::vector<std::size_t> addCells(PlacementDB &db, const std::string &prefix, in
     return ids;
 }
 
-void addNet(PlacementDB &db, const std::string &net, const std::vector<std::string> &cells) {
+void addNet(ktDM &db, const std::string &net, const std::vector<std::string> &cells) {
     (void)db.addNet(net);
     for (const std::string &c : cells) {
         (void)db.addPin(c, net, 0.0, 0.0, true);
+    }
+}
+
+/// Every cell (1 wide, one row tall) lies inside the rows.
+void expectInRows(ktDM &db, const std::vector<std::size_t> &ids) {
+    for (const std::size_t id : ids) {
+        const auto [x, y] = db.getCellPosition(id);
+        BOOST_TEST(x >= -1e-9);
+        BOOST_TEST(x + 1.0 <= kWidth + 1e-9);
+        BOOST_TEST(y >= -1e-9);
+        BOOST_TEST(y + kRowHeight <= kRows * kRowHeight + 1e-9);
     }
 }
 
@@ -73,7 +82,7 @@ RatioPlaceParams smallLeaves() {
 BOOST_AUTO_TEST_SUITE(ktplace_ntuplace1)
 
 BOOST_AUTO_TEST_CASE(cells_avoid_a_macro_marked_as_terminal) {
-    PlacementDB db;
+    ktDM db;
     addRows(db);
     // A macro over the whole left half of the rows: the only room is on the right.
     addFixed(db, "macro", 0.0, 0.0, 50.0, kRows * kRowHeight);
@@ -91,20 +100,28 @@ BOOST_AUTO_TEST_CASE(cells_avoid_a_macro_marked_as_terminal) {
         (void)y;
         BOOST_TEST(x >= 50.0 - 1e-9, "cell " << id << " at x=" << x << " is on the macro");
     }
+    expectInRows(db, ids);
 }
 
 BOOST_AUTO_TEST_CASE(cells_follow_their_pads) {
-    PlacementDB db;
+    ktDM db;
     addRows(db);
     // Pads outside the rows, left and right, as in a Bookshelf pad ring.
     addFixed(db, "padL", -20.0, 45.0, 1.0, 1.0);
     addFixed(db, "padR", kWidth + 20.0, 45.0, 1.0, 1.0);
-    const auto a = addCells(db, "a", 16);
-    const auto b = addCells(db, "b", 16);
+    // Created alternately (a0, b0, a1, b1, ...), so a split by netlist order
+    // mixes the groups and only the pads can tell them apart.
+    std::vector<std::size_t> a, b;
+    for (int i = 0; i < 16; ++i) {
+        a.push_back(db.addCell("a" + std::to_string(i), 1.0, kRowHeight));
+        b.push_back(db.addCell("b" + std::to_string(i), 1.0, kRowHeight));
+    }
     // Each group is a chain, and each group's ends are tied to its pad.
     for (int i = 0; i + 1 < 16; ++i) {
-        addNet(db, "na" + std::to_string(i), {"a" + std::to_string(i), "a" + std::to_string(i + 1)});
-        addNet(db, "nb" + std::to_string(i), {"b" + std::to_string(i), "b" + std::to_string(i + 1)});
+        addNet(db, "na" + std::to_string(i),
+               {"a" + std::to_string(i), "a" + std::to_string(i + 1)});
+        addNet(db, "nb" + std::to_string(i),
+               {"b" + std::to_string(i), "b" + std::to_string(i + 1)});
     }
     for (int i = 0; i < 16; i += 3) {
         addNet(db, "pa" + std::to_string(i), {"padL", "a" + std::to_string(i)});
@@ -121,13 +138,14 @@ BOOST_AUTO_TEST_CASE(cells_follow_their_pads) {
     for (const std::size_t id : b) {
         meanB += db.getCellPosition(id).first / 16.0;
     }
-    // Interleaved in the netlist, so only the pads can tell the groups apart.
-    BOOST_TEST(meanA < 50.0);
-    BOOST_TEST(meanB > 50.0);
+    BOOST_TEST(meanA < 35.0);
+    BOOST_TEST(meanB > 65.0);
+    expectInRows(db, a);
+    expectInRows(db, b);
 }
 
 BOOST_AUTO_TEST_CASE(split_follows_free_area_and_stays_in_rows) {
-    PlacementDB db;
+    ktDM db;
     addRows(db);
     // A macro over the left quarter: the first cut (vertical, at x = 50) has
     // 25 units of free width on the left and 50 on the right, so a third of the
@@ -159,7 +177,7 @@ BOOST_AUTO_TEST_CASE(split_follows_free_area_and_stays_in_rows) {
 }
 
 BOOST_AUTO_TEST_CASE(tiny_designs_do_not_fail) {
-    PlacementDB db;
+    ktDM db;
     addRows(db);
     const auto ids = addCells(db, "c", 3);
     addNet(db, "n", {"c0", "c1", "c2"});
@@ -168,13 +186,7 @@ BOOST_AUTO_TEST_CASE(tiny_designs_do_not_fail) {
     p.targetLeafCells = 1;  // forces cuts down to single cells
     const RatioPlaceResult res = placer.place(p);
     BOOST_TEST(res.numMovable == 3u);
-    for (const std::size_t id : ids) {
-        const auto [x, y] = db.getCellPosition(id);
-        BOOST_TEST(x >= 0.0);
-        BOOST_TEST(x + 1.0 <= kWidth + 1e-9);
-        BOOST_TEST(y >= 0.0);
-        BOOST_TEST(y + kRowHeight <= kRows * kRowHeight + 1e-9);
-    }
+    expectInRows(db, ids);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

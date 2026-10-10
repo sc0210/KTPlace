@@ -58,7 +58,7 @@ constexpr double kBalanceSlack = 0.02;
 
 class RatioPlacer::Impl {
 public:
-    explicit Impl(PlacementDB &db) : db_(db), graph_(db.getGraph()) {}
+    explicit Impl(ktDM &db) : db_(db), graph_(db.getGraph()) {}
 
     RatioPlaceResult place(const RatioPlaceParams &params);
 
@@ -79,15 +79,15 @@ private:
     void setRegionCentre(const RatioRegion &r);
     void writeFrame(std::size_t depth, const char *note) const;
 
-    PlacementDB &db_;
-    Graph graph_;
+    ktDM &db_;
+    const Graph &graph_;
     std::vector<std::uint32_t> mov_;  // movable, non-terminal vertex ids
     std::vector<double> area_;        // area of each movable
     std::vector<HyperNet> nets_;
     // For each movable, the nets it is on, so a gain update does not rescan the
     // whole netlist.
     std::vector<std::vector<std::uint32_t>> cellNets_;
-    std::vector<AreaRect> rowRects_;    // one per subrow, sorted by y
+    std::vector<AreaRect> rowRects_;  // one per subrow, sorted by y
     double maxRowH_ = 0.0;
     std::vector<AreaRect> fixedRects_;  // fixed blocks, terminals included
     // Where cells may go: the bounding box of the rows. Not the die box, which also
@@ -114,18 +114,14 @@ private:
 };
 
 void RatioPlacer::Impl::build() {
-    const std::size_t nv = graph_.getNumVertices();
+    const std::size_t nv = graph_.getNumCells();
     for (std::size_t v = 0; v < nv; ++v) {
-        const Vertex &vert = graph_.getVertex(v);
-        if (vert.type != VertexType::Cell) {
-            continue;
-        }
+        const Vertex &vert = graph_.getCell(v);
         if (vert.isFixed || vert.isTerminal) {
             // Bookshelf marks fixed macros as terminals (every one of adaptec1's 543
             // is), so a "fixed and not terminal" test finds no obstacles at all.
             if (vert.width > 0.0 && vert.height > 0.0) {
-                fixedRects_.push_back(
-                    {vert.x, vert.y, vert.x + vert.width, vert.y + vert.height});
+                fixedRects_.push_back({vert.x, vert.y, vert.x + vert.width, vert.y + vert.height});
             }
             continue;
         }
@@ -145,20 +141,13 @@ void RatioPlacer::Impl::build() {
     // A block with two pins on one net is still one block of that net; counted
     // twice, its side count never drops to 1 and FM never sees it un-cut the net.
     std::vector<std::size_t> lastNet(mov_.size(), std::numeric_limits<std::size_t>::max());
-    for (std::size_t v = 0; v < nv; ++v) {
-        const Vertex &vert = graph_.getVertex(v);
-        if (vert.type != VertexType::Net) {
-            continue;
-        }
+    for (std::size_t v = 0; v < graph_.getNumNets(); ++v) {
         HyperNet n;
-        for (const std::size_t eid : vert.inEdges) {
-            const Edge &e = graph_.getEdge(eid);
-            const Vertex &pin = graph_.getVertex(e.source);
-            if (pin.type != VertexType::Cell) {
-                continue;
-            }
-            if (indexOf[e.source] != kNoIndex) {
-                const std::uint32_t c = indexOf[e.source];
+        for (const std::size_t pinId : graph_.getNetPins(v)) {
+            const Pin &e = graph_.getPin(pinId);
+            const Vertex &pin = graph_.getCell(e.cellId);
+            if (indexOf[e.cellId] != kNoIndex) {
+                const std::uint32_t c = indexOf[e.cellId];
                 if (lastNet[c] != v) {
                     lastNet[c] = v;
                     n.cells.push_back(c);
@@ -201,7 +190,7 @@ void RatioPlacer::Impl::build() {
 
     box_ = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
             -std::numeric_limits<double>::max(), -std::numeric_limits<double>::max()};
-    for (const PlacementDB::RowInfo &r : db_.getRows()) {
+    for (const RowInfo &r : db_.getRows()) {
         for (const auto &sr : r.subrows) {
             const AreaRect rr{sr.xlo(), r.coordinate, sr.xhi(r.pitch()), r.coordinate + r.height};
             if (rr.x1 <= rr.x0) {
@@ -215,12 +204,13 @@ void RatioPlacer::Impl::build() {
         }
     }
     if (rowRects_.empty()) {
-        box_ = placementDieBox(db_);  // no rows: the die is all there is
+        box_ = db_.placementDieBox();  // no rows: the die is all there is
     }
     // Sorted by y so freeAreaIn only visits the rows a region spans, not all of
     // them on every cut.
-    std::sort(rowRects_.begin(), rowRects_.end(),
-              [](const AreaRect &a, const AreaRect &b) { return a.y0 < b.y0; });
+    std::sort(rowRects_.begin(), rowRects_.end(), [](const AreaRect &a, const AreaRect &b) {
+        return a.y0 < b.y0;
+    });
     maxRowH_ = 0.0;
     for (const AreaRect &r : rowRects_) {
         maxRowH_ = std::max(maxRowH_, r.y1 - r.y0);
@@ -235,7 +225,9 @@ double RatioPlacer::Impl::freeAreaIn(double x0, double y0, double x1, double y1)
     }
     double rows = 0.0;
     auto it = std::lower_bound(rowRects_.begin(), rowRects_.end(), y0 - maxRowH_,
-                               [](const AreaRect &r, double y) { return r.y0 < y; });
+                               [](const AreaRect &r, double y) {
+                                   return r.y0 < y;
+                               });
     for (; it != rowRects_.end() && it->y0 < y1; ++it) {
         rows += overlap(*it, x0, y0, x1, y1);
     }
@@ -261,8 +253,8 @@ double RatioPlacer::Impl::movableArea(const std::vector<std::uint32_t> &cells) c
     return a;
 }
 
-std::size_t RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cells,
-                                           bool vertical, double cut, double target, double tol,
+std::size_t RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cells, bool vertical,
+                                           double cut, double target, double tol,
                                            std::vector<std::uint8_t> &side) {
     const std::size_t n = cells.size();
     side.assign(n, 0);
@@ -331,7 +323,9 @@ std::size_t RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cel
         }
         return g;
     };
-    const auto dev = [&](double a) { return std::fabs(a - target); };
+    const auto dev = [&](double a) {
+        return std::fabs(a - target);
+    };
 
     std::vector<int> gain(n, 0);
     std::vector<char> locked(n, 0);
@@ -427,8 +421,7 @@ std::size_t RatioPlacer::Impl::bipartition(const std::vector<std::uint32_t> &cel
                     }
                 }
             }
-            if (dev(cur) <= tol &&
-                (cum > bestCum || (cum == bestCum && dev(cur) < bestDev))) {
+            if (dev(cur) <= tol && (cum > bestCum || (cum == bestCum && dev(cur) < bestDev))) {
                 bestCum = cum;
                 bestLen = moves.size();
                 bestDev = dev(cur);
@@ -499,18 +492,18 @@ void RatioPlacer::Impl::writeFrame(std::size_t depth, const char *note) const {
     if (!anim.enabled() || anim.capped()) {
         return;
     }
-    std::vector<float> xs(graph_.getNumVertices(), 0.0f);
-    std::vector<float> ys(graph_.getNumVertices(), 0.0f);
-    for (std::size_t v = 0; v < graph_.getNumVertices(); ++v) {
-        xs[v] = static_cast<float>(graph_.getVertex(v).x);
-        ys[v] = static_cast<float>(graph_.getVertex(v).y);
+    std::vector<float> xs(graph_.getNumCells(), 0.0f);
+    std::vector<float> ys(graph_.getNumCells(), 0.0f);
+    for (std::size_t v = 0; v < graph_.getNumCells(); ++v) {
+        xs[v] = static_cast<float>(graph_.getCell(v).x);
+        ys[v] = static_cast<float>(graph_.getCell(v).y);
     }
     for (std::size_t i = 0; i < mov_.size(); ++i) {
-        const Vertex &v = graph_.getVertex(mov_[i]);
+        const Vertex &v = graph_.getCell(mov_[i]);
         xs[mov_[i]] = static_cast<float>(posX_[i] - 0.5 * v.width);
         ys[mov_[i]] = static_cast<float>(posY_[i] - 0.5 * v.height);
     }
-    const std::array<double, 4> box = placementDieBox(db_);
+    const std::array<double, 4> box = db_.placementDieBox();
     anim.record(graph_, xs, ys, box, depth, params_.maxLevels, 0.0, 0.0, 0.0, note, fences_,
                 /*mandatory=*/false);
 }
@@ -598,9 +591,9 @@ void RatioPlacer::Impl::divide(RatioRegion r) {
     // One line per accepted cut: the recursion's heartbeat. The trace file is what
     // the web console streams into its trace pane, so it is written whether or not
     // -v is set.
-    ktlog.trace("  ratio cut depth {}: {} cells -> {} / {} (target {:.1f}%), {} nets cut",
-                r.depth, r.cells.size(), r0.cells.size(), r1.cells.size(),
-                100.0 * free0 / (free0 + free1), cutNets);
+    ktlog.trace("  ratio cut depth {}: {} cells -> {} / {} (target {:.1f}%), {} nets cut", r.depth,
+                r.cells.size(), r0.cells.size(), r1.cells.size(), 100.0 * free0 / (free0 + free1),
+                cutNets);
     setRegionCentre(r0);
     setRegionCentre(r1);
     writeFrame(r.depth, "ratio bipartition");
@@ -615,8 +608,8 @@ RatioPlaceResult RatioPlacer::Impl::place(const RatioPlaceParams &params) {
     if (mov_.empty()) {
         return res_;
     }
-    ktlog.trace("  ratio build: {} movable cells, {} fixed blocks, {} hypernets",
-                res_.numMovable, res_.numFixed, res_.nets);
+    ktlog.trace("  ratio build: {} movable cells, {} fixed blocks, {} hypernets", res_.numMovable,
+                res_.numFixed, res_.nets);
 
     // The paper starts every block at the centre of the placement area: with
     // nothing decided, that is the only placement that implies no cut, and the
@@ -633,11 +626,11 @@ RatioPlaceResult RatioPlacer::Impl::place(const RatioPlaceParams &params) {
     // posX_/posY_ are centres; the database holds lower-left corners, kept inside
     // the placement area.
     for (std::size_t i = 0; i < mov_.size(); ++i) {
-        const Vertex &v = graph_.getVertex(mov_[i]);
-        const double x = std::clamp(posX_[i] - 0.5 * v.width, box_[0],
-                                    std::max(box_[0], box_[2] - v.width));
-        const double y = std::clamp(posY_[i] - 0.5 * v.height, box_[1],
-                                    std::max(box_[1], box_[3] - v.height));
+        const Vertex &v = graph_.getCell(mov_[i]);
+        const double x =
+            std::clamp(posX_[i] - 0.5 * v.width, box_[0], std::max(box_[0], box_[2] - v.width));
+        const double y =
+            std::clamp(posY_[i] - 0.5 * v.height, box_[1], std::max(box_[1], box_[3] - v.height));
         db_.setCellPosition(mov_[i], x, y);
     }
 
@@ -670,7 +663,7 @@ RatioPlaceResult RatioPlacer::Impl::place(const RatioPlaceParams &params) {
     return res_;
 }
 
-RatioPlacer::RatioPlacer(PlacementDB &db) : pImpl(new Impl(db)) {}
+RatioPlacer::RatioPlacer(ktDM &db) : pImpl(new Impl(db)) {}
 RatioPlacer::~RatioPlacer() = default;
 RatioPlacer::RatioPlacer(RatioPlacer &&) noexcept = default;
 RatioPlacer &RatioPlacer::operator=(RatioPlacer &&) noexcept = default;

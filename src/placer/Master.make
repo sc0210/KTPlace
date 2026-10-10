@@ -58,7 +58,7 @@ $(OBJ_DIR)/%.o: %.cc
 # ============================================================================
 #
 # The suites (placer/simpl/test/test_simpl.cc) are built and run by the
-# top-level `make test`, not here: they need PlacementDB, the logger, the
+# top-level `make test`, not here: they need ktDM, the logger, the
 # timer and the plotter, so they link the whole engine and belong with the
 # other suites at the top level.
 

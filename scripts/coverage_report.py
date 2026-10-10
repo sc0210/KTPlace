@@ -103,14 +103,66 @@ def run_tests() -> list[str]:
                   if ".gcno" not in p and os.access(p, os.X_OK))
     if not bins:
         raise SystemExit("no test binaries built; run with --build")
+
+    # Rasterising is -O0 with a counter on every basic block, and both picture
+    # outputs are large by default: the final still is 6144x6144, and the
+    # animation deflates a frame per placement change. Between them they were the
+    # entire cost of this step, and neither buys any coverage -- test_viz already
+    # drives the PNG writer, the GIF writer and the raster path at sizes chosen
+    # for a test.
+    #
+    # Measured on this suite: 1524s at the defaults, and the same coverage with
+    # the picture sizes cut. The animation stays ON -- turning it off is faster
+    # still, but it drops the GIF writer out of the report and the gate is set
+    # from the total, so the saving is not worth the regression. What is cut is
+    # how much is drawn: 40 frames at 768x768 rather than 1200 at twice that.
+    #
+    # setdefault, not assignment: a developer chasing something can still ask for
+    # the full-size picture.
+    #
+    # KTPLACE_FINAL_ZOOM=1 is 768x768 rather than 0 or off, so the final-image
+    # code still runs and stays covered -- off would have saved the same time and
+    # quietly dropped it from the report.
+    #
+    # Drawing is off for the suite runs, and the one path that needs it is replayed
+    # afterwards on a single case.
+    #
+    # It is not the frame count, the frame size or the frame cadence that costs.
+    # In test_flow, turning the animation on goes from 0.6s to 190s, and 40 frames,
+    # 8 frames, 1 frame, 768px and 77px all land within a second of each other --
+    # because a per-conjugate-gradient-iterate frame is recorded as "mandatory",
+    # and a mandatory frame is exempt from both the stage budget and the thinning
+    # stride. So the budget does not bound it: the last iterate of every solve is
+    # always recorded whatever KTPLACE_SIMPL_CG_EVERY says, and that is enough
+    # frames, each one an SVG written plus a frame rasterised, to cost 190s.
+    #
+    # So the coverage run takes the animation off -- which drops the solver's
+    # per-iterate recording out of the report -- and then puts back exactly the one
+    # case that draws on purpose. .gcda counters merge across runs, so the replayed
+    # case lands in the same report.
+    env = dict(os.environ)
+    env.setdefault("KTPLACE_ANIM", "0")
+    env.setdefault("KTPLACE_ANIM_MAX_FRAMES", "40")
+    env.setdefault("KTPLACE_ANIM_ZOOM", "1")
+    env.setdefault("KTPLACE_FINAL_ZOOM", "1")
+
     for b in bins:
         proc = subprocess.run([b, "--log_level=message"], cwd=REPO,
-                              text=True, capture_output=True)
+                              text=True, capture_output=True, env=env)
         name = Path(b).name
         if proc.returncode != 0:
             print(f"  {name}: FAILED", file=sys.stderr)
         else:
             print(f"  {name}: ok", file=sys.stderr)
+
+    # The case that renders on purpose, with the animation on, once.
+    animated = REPO / "build-cov" / "bin" / "test_flow"
+    if os.access(animated, os.X_OK):
+        anim_env = dict(env)
+        anim_env["KTPLACE_ANIM"] = "1"
+        subprocess.run([str(animated), "--run_test=flow_writes_visualization_output_when_asked",
+                        "--log_level=message"], cwd=REPO, text=True, capture_output=True,
+                       env=anim_env)
     return [Path(b).name for b in bins]
 
 

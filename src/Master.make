@@ -15,10 +15,10 @@ CXX := g++
 # lines back through the optimizer at higher levels, which makes the uncovered
 # set harder to read and the numbers less trustworthy.
 ifeq ($(COVERAGE),1)
-  CXXFLAGS := -std=c++23 -Wall -Wextra -Wpedantic -Wshadow -Wno-psabi -O0 -g -pthread --coverage
+  CXXFLAGS := -std=c++23 -Wall -Wextra -Wpedantic -Wshadow -O0 -g -pthread --coverage
   COVERAGE_LDFLAGS := --coverage
 else
-  CXXFLAGS := -std=c++23 -Wall -Wextra -Wpedantic -Wshadow -Wno-psabi -O2 -g -pthread
+  CXXFLAGS := -std=c++23 -Wall -Wextra -Wpedantic -Wshadow -O2 -g -pthread
 endif
 # All quoted includes are project-root-relative (e.g. "datamodel/kt_dm.h"),
 # so the project root (this directory) is the only include path needed.
@@ -55,12 +55,12 @@ LOCAL_SRCS := kt_flowMgr.cc kt_place.cc kt_option.cc
 # Object files for current directory
 LOCAL_OBJS := $(LOCAL_SRCS:%.cc=$(OBJ_DIR)/%.o)
 
-# Get object files from subdirectories via their Master.make files. MAKEFLAGS=
-# keeps the parent's jobserver handle out of these parse-time sub-makes, which
-# are inside $(shell) and so cannot reach it; without it make warns "jobserver
-# unavailable" eight times (once per subdirectory) and falls back to -j1.
-# They only print object names, so serial is fine either way -- the flush just
-# keeps the build output clean.
+# Get object files from subdirectories via their Master.make files
+# MAKEFLAGS is cleared for these. $(MAKE) inside $(shell ...) is not handed the
+# jobserver, so every one of them announced "jobserver unavailable: using -j1"
+# -- once per subdirectory, on every build. The target only echoes a list of
+# paths, so dropping -j along with the warning costs nothing. The builds
+# themselves go through the recipe at line 103, which does get the jobserver.
 SUBDIR_OBJS := $(foreach dir,$(SUBDIRS),$(shell MAKEFLAGS= $(MAKE) -s -C $(dir) -f Master.make objlist OBJ_DIR=$(OBJ_DIR)/$(dir)))
 
 # All object files

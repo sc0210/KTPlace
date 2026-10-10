@@ -85,7 +85,7 @@ constexpr double kSiteEps = 1e-6;
 
 class MultiRowLegalizer::Impl {
 public:
-    explicit Impl(PlacementDB &db) : db_(db), graph_(db.getGraph()) {}
+    explicit Impl(ktDM &db) : db_(db), graph_(db.getGraph()) {}
 
     MultiRowLegalizeResult run(const MultiRowLegalizeParams &params);
 
@@ -117,7 +117,7 @@ private:
     void writeFrame(const std::string &path, const std::string &note, std::size_t step,
                     std::size_t total);
 
-    PlacementDB &db_;
+    ktDM &db_;
     const Graph &graph_;
 
     std::vector<Track> tracks_;
@@ -135,7 +135,7 @@ private:
 
 void MultiRowLegalizer::Impl::buildTracks() {
     tracks_.clear();
-    for (const PlacementDB::RowInfo &ri : db_.getRows()) {
+    for (const RowInfo &ri : db_.getRows()) {
         if (!(ri.height > 0.0) || ri.subrows.empty()) {
             continue;
         }
@@ -143,7 +143,7 @@ void MultiRowLegalizer::Impl::buildTracks() {
         t.y = ri.coordinate;
         t.height = ri.height;
         t.pitch = ri.pitch();
-        for (const PlacementDB::SubrowInfo &si : ri.subrows) {
+        for (const SubrowInfo &si : ri.subrows) {
             Segment s;
             s.xlo = si.xlo();
             s.xhi = si.xhi(ri.pitch());
@@ -166,10 +166,10 @@ void MultiRowLegalizer::Impl::buildTracks() {
 
 void MultiRowLegalizer::Impl::collect() {
     items_.clear();
-    const std::size_t nv = graph_.getNumVertices();
+    const std::size_t nv = graph_.getNumCells();
     for (std::size_t v = 0; v < nv; ++v) {
-        const Vertex &vert = graph_.getVertex(v);
-        if (vert.type != VertexType::Cell || vert.isFixed || vert.isTerminal) {
+        const Vertex &vert = graph_.getCell(v);
+        if (vert.isFixed || vert.isTerminal) {
             continue;
         }
         if (!(vert.width > 0.0) || !(vert.height > 0.0)) {
@@ -339,7 +339,7 @@ MultiRowLegalizeResult MultiRowLegalizer::Impl::run(const MultiRowLegalizeParams
     ScopedTimer timer("legalize");
     res.hpwlBefore = db_.hpwl();
 
-    const std::array<double, 4> box = placementDieBox(db_);
+    const std::array<double, 4> box = db_.placementDieBox();
     die_ = box;
     dieX0_ = box[0];
     dieY0_ = box[1];
@@ -366,10 +366,10 @@ MultiRowLegalizeResult MultiRowLegalizer::Impl::run(const MultiRowLegalizeParams
 
     // Fixed blocks first: they are immovable, so the free space has to be
     // described around them before anything else competes for it.
-    const std::size_t nv = graph_.getNumVertices();
+    const std::size_t nv = graph_.getNumCells();
     for (std::size_t v = 0; v < nv; ++v) {
-        const Vertex &vert = graph_.getVertex(v);
-        if (vert.type != VertexType::Cell || !vert.isFixed || vert.isTerminal) {
+        const Vertex &vert = graph_.getCell(v);
+        if (!vert.isFixed || vert.isTerminal) {
             continue;
         }
         if (!(vert.width > 0.0) || !(vert.height > 0.0)) {
@@ -459,7 +459,7 @@ MultiRowLegalizeResult MultiRowLegalizer::Impl::run(const MultiRowLegalizeParams
 }
 
 void MultiRowLegalizer::Impl::selfCheck(MultiRowLegalizeResult &res) const {
-    const std::size_t nv = graph_.getNumVertices();
+    const std::size_t nv = graph_.getNumCells();
     double rowHeight = 0.0;
     double pitch = 1.0;
     if (!tracks_.empty()) {
@@ -471,8 +471,8 @@ void MultiRowLegalizer::Impl::selfCheck(MultiRowLegalizeResult &res) const {
     std::size_t offSite = 0;
     std::size_t overFixed = 0;
     for (std::size_t v = 0; v < nv; ++v) {
-        const Vertex &vert = graph_.getVertex(v);
-        if (vert.type != VertexType::Cell || vert.isFixed || vert.isTerminal) {
+        const Vertex &vert = graph_.getCell(v);
+        if (vert.isFixed || vert.isTerminal) {
             continue;
         }
         // A cell belongs to a row when its base sits on that row's base line.
@@ -521,11 +521,11 @@ void MultiRowLegalizer::Impl::selfCheck(MultiRowLegalizeResult &res) const {
     const double dx = spanX / static_cast<double>(nbx);
     const double dy = spanY / static_cast<double>(nby);
     const auto cellAt = [&](std::size_t v) -> const Vertex * {
-        const Vertex &c = graph_.getVertex(v);
-        return (c.type == VertexType::Cell && !c.isFixed && !c.isTerminal) ? &c : nullptr;
+        const Vertex &c = graph_.getCell(v);
+        return (!c.isFixed && !c.isTerminal) ? &c : nullptr;
     };
     std::vector<std::vector<std::size_t>> buckets(nbx * nby);
-    const std::size_t nv2 = graph_.getNumVertices();
+    const std::size_t nv2 = graph_.getNumCells();
     for (std::size_t v = 0; v < nv2; ++v) {
         const Vertex *c = cellAt(v);
         if (c == nullptr) {
@@ -560,12 +560,12 @@ void MultiRowLegalizer::Impl::selfCheck(MultiRowLegalizeResult &res) const {
 void MultiRowLegalizer::Impl::writeFrame(const std::string &path, const std::string &note,
                                          std::size_t step, std::size_t total) {
     ++frames_;
-    const std::size_t nv = graph_.getNumVertices();
+    const std::size_t nv = graph_.getNumCells();
     std::vector<float> xs(nv, 0.0f);
     std::vector<float> ys(nv, 0.0f);
     for (std::size_t v = 0; v < nv; ++v) {
-        xs[v] = static_cast<float>(graph_.getVertex(v).x);
-        ys[v] = static_cast<float>(graph_.getVertex(v).y);
+        xs[v] = static_cast<float>(graph_.getCell(v).x);
+        ys[v] = static_cast<float>(graph_.getCell(v).y);
     }
     writeFrameSvg(path, graph_, xs, ys, die_, step, total, db_.hpwl(), 0.0, 0.0, note, fences_,
                   /*fixedView=*/true);
@@ -577,7 +577,7 @@ double MultiRowLegalizer::Impl::hpwl() const {
 
 // ---------------------------------------------------------------------------
 
-MultiRowLegalizer::MultiRowLegalizer(PlacementDB &db) : pImpl(std::make_unique<Impl>(db)) {}
+MultiRowLegalizer::MultiRowLegalizer(ktDM &db) : pImpl(std::make_unique<Impl>(db)) {}
 
 MultiRowLegalizer::~MultiRowLegalizer() = default;
 

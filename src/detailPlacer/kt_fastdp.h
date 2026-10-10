@@ -7,6 +7,7 @@
 #include "datamodel/kt_dm.h"
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -53,7 +54,7 @@ struct DetailPlaceResult {
 
 class FastDetailedPlacer {
 public:
-    explicit FastDetailedPlacer(PlacementDB &db);
+    explicit FastDetailedPlacer(ktDM &db);
     ~FastDetailedPlacer();
 
     FastDetailedPlacer(const FastDetailedPlacer &) = delete;

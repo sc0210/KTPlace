@@ -2,7 +2,7 @@
 // LEF/DEF format adapter
 //
 // Parses industry-standard LEF (physical library) and DEF (design) files into
-// the internal PlacementDB. Supports the ISPD / ICCAD placement-contest style
+// the internal ktDM. Supports the ISPD / ICCAD placement-contest style
 // inputs (floorplan.def + cells.lef + tech.lef + design.v), where every standard
 // cell is "UNPLACED", macros and I/O pads are placed/fixed, and net connectivity
 // comes from the DEF NETS section.
@@ -29,7 +29,7 @@ namespace ktplace {
 // are in microns, are scaled into the DEF coordinate frame.
 class LefDefInputAdapter final : public InputReader {
 public:
-    explicit LefDefInputAdapter(std::unique_ptr<PlacementDB> db = nullptr);
+    explicit LefDefInputAdapter(std::unique_ptr<ktDM> db = nullptr);
 
     ~LefDefInputAdapter() override;
 
@@ -42,7 +42,7 @@ public:
     LefDefInputAdapter &operator=(LefDefInputAdapter &&) noexcept;
 
     [[nodiscard]] bool recognises(const std::string &dirPath) const override;
-    [[nodiscard]] std::unique_ptr<PlacementDB> read(const std::string &dirPath) override;
+    [[nodiscard]] std::unique_ptr<ktDM> read(const std::string &dirPath) override;
     [[nodiscard]] std::string_view formatName() const override {
         return "lefdef";
     }
@@ -56,16 +56,16 @@ public:
     [[nodiscard]] bool readFromFiles(const std::string &defFile,
                                      const std::vector<std::string> &lefFiles);
 
-    // Get the PlacementDB object
+    // Get the ktDM object
 
-    [[nodiscard]] PlacementDB &getPlacementDB() {
+    [[nodiscard]] ktDM &getDM() {
         return *db;
     }
-    [[nodiscard]] const PlacementDB &getPlacementDB() const {
+    [[nodiscard]] const ktDM &getDM() const {
         return *db;
     }
 
-    // Release ownership of the PlacementDB
+    // Release ownership of the ktDM
 
     // Placement region ("fence") constraints read from the DEF.// Empty when the design declares no REGIONS/GROUPS.
 
@@ -73,7 +73,7 @@ public:
         return fences;
     }
 
-    [[nodiscard]] std::unique_ptr<PlacementDB> releasePlacementDB() {
+    [[nodiscard]] std::unique_ptr<ktDM> releaseDM() {
         return std::move(db);
     }
 
@@ -104,7 +104,7 @@ private:
     std::string static sanitizeName(const std::string &name);
 
     // Internal state
-    std::unique_ptr<PlacementDB> db;
+    std::unique_ptr<ktDM> db;
     std::unordered_map<std::string, MacroRec> macros;        // LEF macro -> record
     std::unordered_map<std::string, std::string> instMacro;  // DEF inst -> macro
     double unitsPerMicron = 1.0;                             // DEF UNITS DISTANCE MICRONS

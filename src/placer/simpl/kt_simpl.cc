@@ -66,37 +66,63 @@ struct CsrMatrix {
                           });
     }
 
-    /// Sum of squares, as a parallel reduction.
-    double norm2(const std::vector<double> &v) const {
-        return tbb::parallel_reduce(
-            tbb::blocked_range<std::size_t>(0, n, 1024), 0.0,
-            [&](const tbb::blocked_range<std::size_t> &r, double acc) {
-                double a = acc;
-                for (std::size_t i = r.begin(); i < r.end(); ++i) {
-                    a += v[i] * v[i];
-                }
-                return a;
-            },
-            [](double lhs, double rhs) {
-                return lhs + rhs;
-            });
+    /// Sum of @p body(i) over [0, count), in parallel but reproducibly.
+    ///
+    /// Not a tbb::parallel_reduce. A reduction over a range whose split the
+    /// scheduler chooses sums floating-point partials in whatever order the
+    /// splits happen to combine, so two runs of the same binary on the same input
+    /// disagree in the last bits -- and CG feeds those bits back in on the next
+    /// iteration, so the disagreement grows instead of staying a rounding error.
+    /// It did: the LAL's own residual differed in the fourth digit between runs,
+    /// and by the end of global placement the same binary on the same input
+    /// returned 1.399e7 four times out of six and 1.74e7 and 1.80e7 on the other
+    /// two. A 29% spread makes every measurement of this placer unfalsifiable,
+    /// including the ones in this file's comments.
+    ///
+    /// The chunk boundaries here depend only on count and grain, and the
+    /// per-chunk totals are added back in index order, so the sum is a function
+    /// of the input alone.
+    template <typename Body>
+    double chunkedSum(std::size_t count, std::size_t grain, Body body) const {
+        if (count == 0) {
+            return 0.0;
+        }
+        const std::size_t nChunks = (count + grain - 1) / grain;
+        std::vector<double> part(nChunks, 0.0);
+        tbb::parallel_for(tbb::blocked_range<std::size_t>(0, nChunks, 1),
+                          [&](const tbb::blocked_range<std::size_t> &r) {
+                              for (std::size_t c = r.begin(); c < r.end(); ++c) {
+                                  const std::size_t b = c * grain;
+                                  const std::size_t e = std::min(b + grain, count);
+                                  double a = 0.0;
+                                  for (std::size_t i = b; i < e; ++i) {
+                                      a += body(i);
+                                  }
+                                  part[c] = a;
+                              }
+                          });
+        double total = 0.0;
+        for (const double v : part) {
+            total += v;
+        }
+        return total;
     }
 
-    /// Dot product, as a parallel reduction.
-    double dot(const std::vector<double> &a, const std::vector<double> &b) const {
-        return tbb::parallel_reduce(
-            tbb::blocked_range<std::size_t>(0, n, 1024), 0.0,
-            [&](const tbb::blocked_range<std::size_t> &r, double acc) {
-                double s = acc;
-                for (std::size_t i = r.begin(); i < r.end(); ++i) {
-                    s += a[i] * b[i];
-                }
-                return s;
-            },
-            [](double lhs, double rhs) {
-                return lhs + rhs;
-            });
+    /// Sum of squares.
+    double norm2(const std::vector<double> &v) const {
+        return chunkedSum(n, kGrain, [&](std::size_t i) {
+            return v[i] * v[i];
+        });
     }
+
+    /// Dot product.
+    double dot(const std::vector<double> &a, const std::vector<double> &b) const {
+        return chunkedSum(n, kGrain, [&](std::size_t i) {
+            return a[i] * b[i];
+        });
+    }
+
+    static constexpr std::size_t kGrain = 1024;
 };
 
 /// Regular bin grid carrying the two quantities the density test needs: the cell
@@ -151,7 +177,7 @@ struct Block {
 
 class SimplePlacer::Impl {
 public:
-    explicit Impl(PlacementDB &db) : db_(db), graph_(db.getGraph()) {}
+    explicit Impl(ktDM &db) : db_(db), graph_(db.getGraph()) {}
 
     SimplResult run(const SimplParams &P, const std::string &plotDir, bool useFences);
 
@@ -187,7 +213,6 @@ private:
     /// cutline placed at its middle: the cells are ordered by distance from it and
     /// packed into the block's stripes, so the spread is exactly the factor the
     /// block's density is short by.
-    void leafScale(const std::vector<std::uint32_t> &cells, const Block &B);
     void nonlinearScale(const std::vector<std::uint32_t> &cells, std::size_t a0, std::size_t a1,
                         std::size_t b0, std::size_t b1, bool vertical, double cutCoord);
 
@@ -222,7 +247,7 @@ private:
     void densityStats(const std::vector<double> &px, const std::vector<double> &py,
                       const char *tag) const;
 
-    PlacementDB &db_;
+    ktDM &db_;
     Graph &graph_;
     SimplResult res_;
     SimplParams par_;
@@ -353,47 +378,15 @@ private:
 // ---------------------------------------------------------------------------
 
 void SimplePlacer::Impl::collect() {
-    nv_ = graph_.getNumVertices();
+    nv_ = graph_.getNumCells();
+    const std::size_t nn = graph_.getNumNets();
 
     varOfVertex_.assign(nv_, kNoVar);
-    std::vector<NetInfo> nets(nv_);
-    std::size_t netCount = 0;
+    std::vector<NetInfo> nets(nn);
 
+    // Cells first: which are fixed blockages, and which are the solve's variables.
     for (std::size_t v = 0; v < nv_; ++v) {
-        const Vertex &vert = graph_.getVertex(v);
-        if (vert.type == VertexType::Net) {
-            ++netCount;
-            NetInfo &ni = nets[v];
-            ni.weight = vert.weight;
-            ni.cell.reserve(vert.inEdges.size());
-            for (const std::size_t eid : vert.inEdges) {
-                const Edge &e = graph_.getEdge(eid);
-                ni.cell.push_back(e.source);
-                ni.offX.push_back(e.offsetX);
-                ni.offY.push_back(e.offsetY);
-            }
-            // Sort by cell, then drop repeated pins on one cell, keeping the
-            // offsets aligned. A cell listed twice on a net must contribute
-            // once, or the B2B degree k and the clique expansion are both wrong.
-            std::vector<std::uint32_t> order(ni.cell.size());
-            std::iota(order.begin(), order.end(), 0u);
-            std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
-                return ni.cell[a] < ni.cell[b];
-            });
-            NetInfo dedup;
-            dedup.weight = ni.weight;
-            dedup.cell.reserve(order.size());
-            for (const std::uint32_t oi : order) {
-                if (!dedup.cell.empty() && dedup.cell.back() == ni.cell[oi]) {
-                    continue;
-                }
-                dedup.cell.push_back(ni.cell[oi]);
-                dedup.offX.push_back(ni.offX[oi]);
-                dedup.offY.push_back(ni.offY[oi]);
-            }
-            nets[v] = std::move(dedup);
-            continue;
-        }
+        const Vertex &vert = graph_.getCell(v);
         if (vert.isFixed || vert.isTerminal) {
             fixVertex_.push_back(static_cast<std::uint32_t>(v));
             continue;
@@ -409,9 +402,44 @@ void SimplePlacer::Impl::collect() {
         areaMovW_.push_back(vert.width);
         areaMovH_.push_back(vert.height);
     }
+
+    // Then nets, each with the cells its pins reach.
+    for (std::size_t n = 0; n < nn; ++n) {
+        NetInfo &ni = nets[n];
+        ni.weight = graph_.getNet(n).weight;
+        const std::vector<std::size_t> &pins = graph_.getNetPins(n);
+        ni.cell.reserve(pins.size());
+        for (const std::size_t pinId : pins) {
+            const Pin &pin = graph_.getPin(pinId);
+            ni.cell.push_back(static_cast<std::uint32_t>(pin.cellId));
+            ni.offX.push_back(pin.offsetX);
+            ni.offY.push_back(pin.offsetY);
+        }
+        // Sort by cell, then drop repeated pins on one cell, keeping the offsets
+        // aligned. A cell listed twice on a net must contribute once, or the B2B
+        // degree k and the clique expansion are both wrong.
+        std::vector<std::uint32_t> order(ni.cell.size());
+        std::iota(order.begin(), order.end(), 0u);
+        std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
+            return ni.cell[a] < ni.cell[b];
+        });
+        NetInfo dedup;
+        dedup.weight = ni.weight;
+        dedup.cell.reserve(order.size());
+        for (const std::uint32_t oi : order) {
+            if (!dedup.cell.empty() && dedup.cell.back() == ni.cell[oi]) {
+                continue;
+            }
+            dedup.cell.push_back(ni.cell[oi]);
+            dedup.offX.push_back(ni.offX[oi]);
+            dedup.offY.push_back(ni.offY[oi]);
+        }
+        nets[n] = std::move(dedup);
+    }
+
     res_.numMovable = numMovable_;
     res_.numFixed = fixVertex_.size();
-    res_.nets = netCount;
+    res_.nets = nn;
     nets_ = std::move(nets);
 
     // Net-degree shape and pin totals. A design that is nearly all 2-pin nets
@@ -424,10 +452,7 @@ void SimplePlacer::Impl::collect() {
         std::size_t twoPin = 0, multiPin = 0, singlePin = 0, pins = 0, maxDeg = 0;
         double weightSum = 0.0, weightMin = std::numeric_limits<double>::max();
         double weightMax = -std::numeric_limits<double>::max();
-        for (std::size_t v = 0; v < nv_; ++v) {
-            if (graph_.getVertex(v).type != VertexType::Net) {
-                continue;
-            }
+        for (std::size_t v = 0; v < nets_.size(); ++v) {
             const NetInfo &ni = nets_[v];
             const std::size_t k = ni.cell.size();
             pins += k;
@@ -443,11 +468,11 @@ void SimplePlacer::Impl::collect() {
                 ++multiPin;
             }
         }
-        const double invN = 1.0 / static_cast<double>(std::max(netCount, std::size_t{1}));
+        const double invN = 1.0 / static_cast<double>(std::max(nn, std::size_t{1}));
         ktlog.trace(
             "nets: {} total, {} single-pin, {} two-pin ({:.1f}%), {} multi-pin ({:.1f}%), "
             "max degree {}, {:.1f} pins/net; weight mean {:.4g} range [{:.4g},{:.4g}]",
-            netCount, singlePin, twoPin, 100.0 * static_cast<double>(twoPin) * invN, multiPin,
+            nn, singlePin, twoPin, 100.0 * static_cast<double>(twoPin) * invN, multiPin,
             100.0 * static_cast<double>(multiPin) * invN, maxDeg, static_cast<double>(pins) * invN,
             weightSum * invN, weightMin, weightMax);
     }
@@ -469,8 +494,8 @@ void SimplePlacer::Impl::collect() {
     vx_.assign(nv_, 0.0);
     vy_.assign(nv_, 0.0);
     for (std::size_t v = 0; v < nv_; ++v) {
-        vx_[v] = graph_.getVertex(v).x;
-        vy_[v] = graph_.getVertex(v).y;
+        vx_[v] = graph_.getCell(v).x;
+        vy_[v] = graph_.getCell(v).y;
     }
 }
 
@@ -480,7 +505,7 @@ void SimplePlacer::Impl::buildGrid(const SimplParams &P) {
     // The region a cell may occupy, defined once in the datamodel and shared with
     // the legality check. See placementDieBox() there for why it is the union of
     // the fixed geometry, the declared die area and the rows.
-    const std::array<double, 4> dieBox = placementDieBox(db_);
+    const std::array<double, 4> dieBox = db_.placementDieBox();
     BBox die = BBox{dieBox[0], dieBox[1], dieBox[2], dieBox[3]};
     die_ = die;
     dieW_ = std::max(die[2] - die[0], 1e-9);
@@ -494,7 +519,7 @@ void SimplePlacer::Impl::buildGrid(const SimplParams &P) {
     double sumH = 0.0;
     std::size_t cnt = 0;
     for (const std::uint32_t v : movVertex_) {
-        const Vertex &vert = graph_.getVertex(v);
+        const Vertex &vert = graph_.getCell(v);
         sumW += vert.width;
         sumH += vert.height;
         ++cnt;
@@ -521,7 +546,7 @@ void SimplePlacer::Impl::buildGrid(const SimplParams &P) {
         // never optimised wirelength.
         constexpr double kCalibRowHeight = 12.0;
         double rowHeight = 0.0;
-        for (const PlacementDB::RowInfo &r : db_.getRows()) {
+        for (const RowInfo &r : db_.getRows()) {
             if (r.height > 0.0 && (rowHeight == 0.0 || r.height < rowHeight)) {
                 rowHeight = r.height;
             }
@@ -574,7 +599,7 @@ void SimplePlacer::Impl::buildGrid(const SimplParams &P) {
         grid_.avail[k] = grid_.binArea;
     }
     for (const std::uint32_t v : fixVertex_) {
-        const Vertex &vert = graph_.getVertex(v);
+        const Vertex &vert = graph_.getCell(v);
         if (!(vert.width > 0.0) || !(vert.height > 0.0)) {
             continue;
         }
@@ -609,7 +634,7 @@ void SimplePlacer::Impl::buildGrid(const SimplParams &P) {
     // designs hid it because their rows are uniform, so the max and the min are the
     // same number.
     double ri_pitch_floor = std::numeric_limits<double>::max();
-    for (const PlacementDB::RowInfo &r : db_.getRows()) {
+    for (const RowInfo &r : db_.getRows()) {
         if (r.pitch() > 0.0 && r.height > 0.0) {
             ri_pitch_floor = std::min(ri_pitch_floor, r.pitch() * r.height);
         }
@@ -631,9 +656,9 @@ void SimplePlacer::Impl::buildGrid(const SimplParams &P) {
     // with each row times the x-extent of that row's subrows inside the bin,
     // summed over rows, less macro coverage.
     {
-        const std::vector<PlacementDB::RowInfo> rowInfo = db_.getRows();
+        const std::vector<RowInfo> rowInfo = db_.getRows();
         std::fill(grid_.avail.begin(), grid_.avail.end(), 0.0);
-        for (const PlacementDB::RowInfo &ri : rowInfo) {
+        for (const RowInfo &ri : rowInfo) {
             if (!(ri.pitch() > 0.0) || !(ri.height > 0.0)) {
                 continue;
             }
@@ -654,7 +679,7 @@ void SimplePlacer::Impl::buildGrid(const SimplParams &P) {
                 if (!(yOv > 0.0)) {
                     continue;
                 }
-                for (const PlacementDB::SubrowInfo &si : ri.subrows) {
+                for (const SubrowInfo &si : ri.subrows) {
                     if (!(si.xhi(ri.pitch()) > si.xlo())) {
                         continue;
                     }
@@ -677,7 +702,7 @@ void SimplePlacer::Impl::buildGrid(const SimplParams &P) {
         // Subtract macro coverage, then clamp: a bin with no room left must be
         // exactly zero, never a sliver.
         for (const std::uint32_t fv : fixVertex_) {
-            const Vertex &vert = graph_.getVertex(fv);
+            const Vertex &vert = graph_.getCell(fv);
             if (!(vert.width > 0.0) || !(vert.height > 0.0)) {
                 continue;
             }
@@ -708,13 +733,13 @@ void SimplePlacer::Impl::buildGrid(const SimplParams &P) {
         {
             std::size_t nrows = 0, nsub = 0, npos = 0;
             double siteSum = 0.0, maxSite = 0.0, minSite = 1e300;
-            for (const PlacementDB::RowInfo &r : db_.getRows()) {
+            for (const RowInfo &r : db_.getRows()) {
                 ++nrows;
                 nsub += r.subrows.size();
                 siteSum += r.pitch() * r.height;
                 maxSite = std::max(maxSite, r.pitch() * r.height);
                 minSite = std::min(minSite, r.pitch() * r.height);
-                for (const PlacementDB::SubrowInfo &si : r.subrows) {
+                for (const SubrowInfo &si : r.subrows) {
                     if (si.xhi(r.pitch()) > si.xlo()) {
                         ++npos;
                     }
@@ -832,7 +857,7 @@ void SimplePlacer::Impl::buildB2B(const std::vector<double> &px, const std::vect
             // both fixed: a constant, no derivative.
         };
 
-        for (std::size_t v = 0; v < nv_; ++v) {
+        for (std::size_t v = 0; v < nets_.size(); ++v) {
             const NetInfo &ni = nets_[v];
             const std::size_t k = ni.cell.size();
             if (k < 2) {
@@ -1196,7 +1221,7 @@ double SimplePlacer::Impl::hpwl(const std::vector<double> &px,
         cy[movVertex_[i]] = py[i];
     }
     double total = 0.0;
-    for (std::size_t v = 0; v < nv_; ++v) {
+    for (std::size_t v = 0; v < nets_.size(); ++v) {
         const NetInfo &ni = nets_[v];
         if (ni.cell.size() < 2) {
             continue;
@@ -1242,15 +1267,14 @@ void SimplePlacer::Impl::binCells(const std::vector<double> &px, const std::vect
     // in the last step restores the exact serial order (ascending cell index
     // inside every bin), so this produces the same binCells_/cellBin_/cellSlot_
     // and the same per-bin occupancy as the single-threaded loop it replaced.
-    tbb::parallel_for(
-        tbb::blocked_range<std::size_t>(0, numMovable_, 4096),
-        [&](const tbb::blocked_range<std::size_t> &r) {
-            for (std::size_t i = r.begin(); i < r.end(); ++i) {
-                std::size_t ix, iy;
-                grid_.locate(px[i], py[i], ix, iy);
-                cellBin_[i] = static_cast<std::uint32_t>(grid_.at(ix, iy));
-            }
-        });
+    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, numMovable_, 4096),
+                      [&](const tbb::blocked_range<std::size_t> &r) {
+                          for (std::size_t i = r.begin(); i < r.end(); ++i) {
+                              std::size_t ix, iy;
+                              grid_.locate(px[i], py[i], ix, iy);
+                              cellBin_[i] = static_cast<std::uint32_t>(grid_.at(ix, iy));
+                          }
+                      });
 
     std::vector<std::size_t> start(nb + 1, 0);
     for (std::size_t i = 0; i < numMovable_; ++i) {
@@ -1269,15 +1293,15 @@ void SimplePlacer::Impl::binCells(const std::vector<double> &px, const std::vect
                           }
                       });
 
-    tbb::parallel_for(
-        tbb::blocked_range<std::size_t>(0, numMovable_, 4096),
-        [&](const tbb::blocked_range<std::size_t> &r) {
-            for (std::size_t i = r.begin(); i < r.end(); ++i) {
-                const std::size_t k = cellBin_[i];
-                const std::size_t pos = cursor[k].fetch_add(1, std::memory_order_relaxed);
-                binCells_[k][pos] = static_cast<std::uint32_t>(i);
-            }
-        });
+    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, numMovable_, 4096),
+                      [&](const tbb::blocked_range<std::size_t> &r) {
+                          for (std::size_t i = r.begin(); i < r.end(); ++i) {
+                              const std::size_t k = cellBin_[i];
+                              const std::size_t pos =
+                                  cursor[k].fetch_add(1, std::memory_order_relaxed);
+                              binCells_[k][pos] = static_cast<std::uint32_t>(i);
+                          }
+                      });
 
     // Restore the serial order, then recompute the slots and each bin's
     // occupancy by summing its cells in cell-index order -- the same order the
@@ -1329,26 +1353,6 @@ double SimplePlacer::Impl::scaledOverflow() const {
 // Look-ahead legalization (Algorithm 1)
 // ---------------------------------------------------------------------------
 
-void SimplePlacer::Impl::leafScale(const std::vector<std::uint32_t> &cells, const Block &B) {
-    if (cells.empty()) {
-        return;
-    }
-    const std::size_t a0 = B.vertical ? B.ix0 : B.iy0;
-    const std::size_t a1 = B.vertical ? B.ix1 : B.iy1;
-    const std::size_t b0 = B.vertical ? B.iy0 : B.ix0;
-    const std::size_t b1 = B.vertical ? B.iy1 : B.ix1;
-    if (a1 < grid_.nbx) {
-        // The cutline has to exist only as a reference for the ordering; the
-        // middle of the block is as good as any, since the cells are packed into
-        // stripes furthest-first either way.
-        const double axisLo = B.vertical ? grid_.x0 : grid_.y0;
-        const double dAxis = B.vertical ? grid_.dx : grid_.dy;
-        const double cutCoord =
-            axisLo + 0.5 * (static_cast<double>(a0) + static_cast<double>(a1)) * dAxis;
-        nonlinearScale(cells, a0, a1, b0, b1, B.vertical, cutCoord);
-    }
-}
-
 void SimplePlacer::Impl::nonlinearScale(const std::vector<std::uint32_t> &cells, std::size_t a0,
                                         std::size_t a1, std::size_t b0, std::size_t b1,
                                         bool vertical, double cutCoord) {
@@ -1365,7 +1369,7 @@ void SimplePlacer::Impl::nonlinearScale(const std::vector<std::uint32_t> &cells,
     bounds.push_back(a0);
     bounds.push_back(a1 + 1);
     for (const std::uint32_t fv : fixVertex_) {
-        const Vertex &vert = graph_.getVertex(fv);
+        const Vertex &vert = graph_.getCell(fv);
         if (!(vert.width > 0.0) || !(vert.height > 0.0)) {
             continue;
         }
@@ -1390,88 +1394,51 @@ void SimplePlacer::Impl::nonlinearScale(const std::vector<std::uint32_t> &cells,
     std::sort(bounds.begin(), bounds.end());
     bounds.erase(std::unique(bounds.begin(), bounds.end()), bounds.end());
 
-    // Available area of the whole block, in the cut direction.
-    double regionAvail = 0.0;
-    for (std::size_t t = a0; t <= a1; ++t) {
-        for (std::size_t s = b0; s <= b1; ++s) {
-            regionAvail += g.avail[vertical ? g.at(t, s) : g.at(s, t)];
-        }
-    }
-    const double frac = par_.stripeAreaFraction * regionAvail;
-
-    // Subdivide over-large stripes until every one is small enough.
-    for (std::size_t bi = 0; bi + 1 < bounds.size();) {
-        const std::size_t s0 = bounds[bi];
-        const std::size_t s1 = bounds[bi + 1] - 1;
-        double sa = 0.0;
-        for (std::size_t t = s0; t <= s1; ++t) {
-            for (std::size_t s = b0; s <= b1; ++s) {
-                sa += g.avail[vertical ? g.at(t, s) : g.at(s, t)];
-            }
-        }
-        if (sa > frac && s1 > s0) {
-            const std::size_t mid = (s0 + s1) / 2;
-            bounds.insert(bounds.begin() + static_cast<long>(bi) + 1, mid + 1);
-            continue;  // re-test the two halves
-        }
-        ++bi;
-    }
-
-    // A stripe is split again while its available area is more than a tenth of the
-    // region's, and the splits are placed by available area rather than by bin
-    // count, which is what "uniform cutlines" means when the stripes are defined by
-    // area instead of by geometry.
-    //
-    // This step was missing, and without it the mechanism the paper describes
-    // collapses. With stripes drawn only at obstacle borders, a region with no
-    // obstacle in it is a single stripe, and then "each cell is assigned to the
-    // furthest unfilled stripe" has exactly one candidate: the assignment becomes a
-    // bucket rather than a spreading, and the nonlinearity of Figure 4 -- different
-    // scaling factors in different stripes -- never arises. Measured on adaptec1,
-    // this alone moved the look-ahead bound from 3.96e+08 to 3.79e+08.
+    // "Each vertical stripe created in this process is further subdivided if its
+    // available area exceeds 1/10 of the region's available area." One rule, one
+    // pass over the stripe list, cutting at the available-area midpoint so the
+    // two halves are equal in area rather than equal in bin count.
     {
-        auto availIn = [&](std::size_t t0, std::size_t t1) {
+        const auto availIn = [&](std::size_t t0, std::size_t t1) {
             double sa = 0.0;
-            for (std::size_t t = t0; t <= t1; ++t) {
+            for (std::size_t t = t0; t < t1; ++t) {
                 for (std::size_t u = b0; u <= b1; ++u) {
                     sa += g.avail[vertical ? g.at(t, u) : g.at(u, t)];
                 }
             }
             return sa;
         };
-        const double availHere = availIn(a0, a1);
-        if (availHere > 0.0) {
-            const double thresh = availHere / 10.0;
-            bool grew = true;
-            std::size_t guard = 0;
-            while (grew && guard++ < 24) {
-                grew = false;
-                std::vector<std::size_t> next;
-                next.push_back(bounds.front());
-                for (std::size_t k = 0; k + 1 < bounds.size(); ++k) {
-                    const std::size_t lo = bounds[k], hi = bounds[k + 1];
-                    if (hi > lo + 1 && availIn(lo, hi) > thresh) {
-                        const double half = availIn(lo, hi) * 0.5;
-                        double acc = 0.0;
-                        std::size_t cut = hi - 1;
-                        for (std::size_t t = lo; t < hi; ++t) {
-                            for (std::size_t u = b0; u <= b1; ++u) {
-                                acc += g.avail[vertical ? g.at(t, u) : g.at(u, t)];
-                            }
-                            if (acc >= half) {
-                                cut = t;
-                                break;
-                            }
+        const double regionAvail = availIn(a0, a1);
+        const double thresh = par_.stripeAreaFraction * regionAvail;
+        bool grew = true;
+        std::size_t guard = 0;
+        while (grew && guard++ < 32) {
+            grew = false;
+            std::vector<std::size_t> next;
+            next.push_back(bounds.front());
+            for (std::size_t k = 0; k + 1 < bounds.size(); ++k) {
+                const std::size_t lo = bounds[k], hi = bounds[k + 1];
+                if (hi > lo + 1 && availIn(lo, hi) > thresh) {
+                    const double half = availIn(lo, hi) * 0.5;
+                    double acc = 0.0;
+                    std::size_t cut = hi - 1;
+                    for (std::size_t t = lo; t < hi; ++t) {
+                        for (std::size_t u = b0; u <= b1; ++u) {
+                            acc += g.avail[vertical ? g.at(t, u) : g.at(u, t)];
                         }
-                        if (cut > lo && cut < hi) {
-                            next.push_back(cut + 1);
-                            grew = true;
+                        if (acc >= half) {
+                            cut = t;
+                            break;
                         }
                     }
-                    next.push_back(hi);
+                    if (cut > lo && cut < hi) {
+                        next.push_back(cut + 1);
+                        grew = true;
+                    }
                 }
-                bounds.swap(next);
+                next.push_back(hi);
             }
+            bounds.swap(next);
         }
     }
 
@@ -1583,6 +1550,94 @@ void SimplePlacer::Impl::nonlinearScale(const std::vector<std::uint32_t> &cells,
         if (!(assigned > 0.0)) {
             continue;
         }
+        if (par_.stripeScaleMode == SimplParams::StripeScale::Fill) {
+            // Sort and greedily pack, which is the mechanism the paper names for
+            // this step: "If relative placement must be preserved, overlap can be
+            // reduced by means of x- and y-sorting with subsequent greedy packing."
+            //
+            // Sorting by position and walking the stripe lays the cells down at a
+            // uniform density g, each starting where the previous one ended, so
+            // the stripe ends up holding exactly what it can and the cells keep
+            // their relative order. The other modes scale each cell about the
+            // stripe centre and then clamp, and clamping is what breaks: a cell
+            // assigned to a stripe it is nowhere near lands exactly on the stripe
+            // edge, so a whole stripe's worth of cells arrives on one line. That
+            // is not neutral, it is actively harmful -- the worst bin got *worse*
+            // as the average improved (12.3x to 26.9x over three passes on
+            // adaptec1), because each pass piled the survivors onto the next
+            // stripe boundary, and the recursion settled into a fixed point at
+            // 0.245 overflow that fourteen further passes could not move.
+            //
+            // A stripe holding less than its capacity is stretched over its whole
+            // length instead of piling up at one end, which is what keeps a sparse
+            // stripe from becoming the next hot spot.
+            std::vector<std::uint32_t> order2 = packed[s];
+            const bool vert = vertical;
+            std::stable_sort(order2.begin(), order2.end(), [&](std::uint32_t a, std::uint32_t b) {
+                return (vert ? pinX_[a] : pinY_[a]) < (vert ? pinX_[b] : pinY_[b]);
+            });
+            const double L = stripeHi[s] - stripeLo[s];
+            const double Aa = stripeAvail[s];
+            // The length a cell occupies when the stripe is full: the stripe's
+            // equivalent depth times g is the area it may hold per unit length,
+            // so a cell of area a takes a / (g * h).
+            const double h = (L > 0.0) ? Aa / L : 0.0;
+            const double dens = g_ * h;
+            if (!(dens > 0.0) || !(L > 0.0)) {
+                continue;
+            }
+            double need = 0.0;
+            for (const std::uint32_t i : order2) {
+                need += area_[i] / dens;
+            }
+            // Over capacity only: the slots are shortened so the run fits the
+            // stripe. An under-full stripe is NOT stretched -- see below.
+            const double slot = (need > L) ? (L / need) : 1.0;
+
+            // Greedy packing, minimal displacement. Each cell keeps its current
+            // position unless the previous one is in the way, in which case it is
+            // pushed just past it.
+            //
+            // Stretching an under-full stripe over its whole length -- which is
+            // what filling to a uniform density means taken literally -- moves
+            // cells that were never overlapping, and that is where the wirelength
+            // goes: on adaptec1, repacking every stripe uniformly reached 0.107
+            // overflow at 4.68e8, while leaving under-full stripes alone reaches
+            // 0.169 at 4.40e8. The paper's stated aim for this step is removing
+            // overlap "while preserving the relative ordering", which is a
+            // minimal-displacement requirement and not a uniform-density one.
+            double prev = stripeLo[s];
+            std::vector<double> pos(order2.size(), 0.0);
+            for (std::size_t k = 0; k < order2.size(); ++k) {
+                const std::uint32_t i = order2[k];
+                const double half = 0.5 * (area_[i] / dens) * slot;
+                const double cur = vert ? pinX_[i] : pinY_[i];
+                pos[k] = std::clamp(std::max(cur, prev + half), stripeLo[s], stripeHi[s]);
+                prev = pos[k] + half;
+            }
+            // The forward sweep pushes the tail into the high edge. Shift the
+            // whole run back by however much it overshot, so a stripe that only
+            // just fits is centred rather than pressed against one side, and
+            // re-clamp: the shift can put the head below the low edge.
+            if (prev > stripeHi[s]) {
+                const double shift = stripeHi[s] - prev;
+                for (double &v : pos) {
+                    v = std::clamp(v + shift, stripeLo[s], stripeHi[s]);
+                }
+            }
+            for (std::size_t k = 0; k < order2.size(); ++k) {
+                const std::uint32_t i = order2[k];
+                if (vert) {
+                    pinX_[i] = pos[k];
+                } else {
+                    pinY_[i] = pos[k];
+                }
+                std::size_t nx2, ny2;
+                grid_.locate(pinX_[i], pinY_[i], nx2, ny2);
+                rehome(i, grid_.at(nx2, ny2));
+            }
+            continue;
+        }
         const double room = g_ * std::max(stripeAvail[s], 0.0);
         // How far the stripe has to spread to bring its assigned cells down to the
         // density limit. The paper says cells are "linearly scaled from current
@@ -1601,6 +1656,11 @@ void SimplePlacer::Impl::nonlinearScale(const std::vector<std::uint32_t> &cells,
                     factor = (raw < 1.0) ? raw : 1.0;
                     break;
                 case SimplParams::StripeScale::None:
+                    break;
+                case SimplParams::StripeScale::Fill:
+                    // Handled above: the fill mode returns before the scaling
+                    // factors are computed at all. Named here so the switch stays
+                    // exhaustive against the enum.
                     break;
             }
         }
@@ -1643,24 +1703,15 @@ void SimplePlacer::Impl::processBlock(const Block &B) {
         }
     }
     if (M.size() <= par_.minCellsToSplit) {
-        // "Area(B) is small enough" -- but the cells still have to be scaled
-        // inside the block before it is legal, and returning here used to skip
-        // that entirely.
-        //
-        // This is where a large part of the remaining overlap came from. The
-        // recursion stops at this line, and the cells in the block are exactly the
-        // ones that have been left where they were: nothing has moved them since
-        // their parent scaled them into the parent's sub-regions, and a bin holding
-        // three cells is still three cells on top of each other. Measured on
-        // adaptec1, 5697 of 28190 usable bins were still overfull after a full
-        // look-ahead pass, the worst at 1188x capacity, while 15212 bins sat
-        // empty.
-        //
-        // The block is scaled as one region instead of being split: the same
-        // nonlinear scaling, with no cutline partition in front of it, which
-        // spreads the cells across the block along the cut axis by exactly the
-        // factor its density is short by.
-        leafScale(M, B);
+        // Algorithm 1 line 8, verbatim: "if (Area(B) is small enough || B.level
+        // >= 10) then CONTINUE". The block is dropped, not scaled. This used to
+        // fall through into a leaf scaling instead, on the argument that the cells
+        // still had to be spread or they stayed overlapped. The paper's position
+        // is the opposite one: the parent already scaled these cells into its own
+        // sub-regions (line 15), so a block small enough to stop at has been
+        // dealt with, and scaling it a third time moves cells the algorithm never
+        // intended to move -- which is a wirelength cost with no legality
+        // argument behind it.
         return;
     }
     maxBlockCells_ = std::max(maxBlockCells_, M.size());
@@ -1670,9 +1721,8 @@ void SimplePlacer::Impl::processBlock(const Block &B) {
     const std::size_t b0 = B.vertical ? B.iy0 : B.ix0;  // extent across it
     const std::size_t b1 = B.vertical ? B.iy1 : B.ix1;
     if (a0 >= a1) {
-        // One bin across: there is no cut to make, but the cells still have to be
-        // spread within it. Same reason as the small-block case above.
-        leafScale(M, B);
+        // One bin across the cut axis: there is no cutline to place, so there is
+        // nothing for line 15 to scale between. Skipped, as above.
         return;
     }
 
@@ -1733,103 +1783,13 @@ void SimplePlacer::Impl::processBlock(const Block &B) {
         (p < cutCoordC ? M0 : M1).push_back(i);
     }
 
-    // Rebalance the cell partition against the space partition BEFORE packing.
-    //
-    // C_c splits the cells by cell-area median and C_B splits the whitespace, and
-    // for a collapsed input those partitions are unrelated: one sub-region can be
-    // handed far more cell area than the other has available room for. The greedy
-    // then saturates every stripe of the over-subscribed side and the under-
-    // subscribed side stays empty. The paper's stated purpose for the two-cutline
-    // scheme is that it "shifts [C_c] toward the median of available area C_B in
-    // the region, so as to equalize densities in the two sub regions"; this pass
-    // performs that equalisation in area terms, before any geometry is moved.
-    {
-        const auto availOf = [&](std::size_t p0, std::size_t p1) {
-            double acc = 0.0;
-            for (std::size_t t = p0; t <= p1; ++t) {
-                for (std::size_t u = b0; u <= b1; ++u) {
-                    acc += grid_.avail[B.vertical ? grid_.at(t, u) : grid_.at(u, t)];
-                }
-            }
-            return acc;
-        };
-        const auto areaOf = [&](const std::vector<std::uint32_t> &cs) {
-            double acc = 0.0;
-            for (const std::uint32_t i : cs) {
-                acc += area_[i];
-            }
-            return acc;
-        };
-        const double cap0 = g_ * availOf(bA0, bA1);
-        const double cap1 = g_ * availOf(bB0, bB1);
-        const double total = areaOf(M0) + areaOf(M1);
-        if (cap0 > 0.0 && cap1 > 0.0 && total > 0.0) {
-            // Share the cells in proportion to what each side can hold. Cells are
-            // handed over NEAREST THE CUTLINE first: both choices move the same
-            // area, but crossing the cutline is a short displacement, whereas
-            // relocating a few large cells can scramble whole net clusters.
-            const double target0 = total * (cap0 / (cap0 + cap1));
-            const auto byCutline = [&](const std::vector<std::uint32_t> &src) {
-                std::vector<std::uint32_t> o = src;
-                std::stable_sort(o.begin(), o.end(), [&](std::uint32_t p, std::uint32_t q) {
-                    return std::abs((B.vertical ? pinX_[p] : pinY_[p]) - cutCoord) <
-                           std::abs((B.vertical ? pinX_[q] : pinY_[q]) - cutCoord);
-                });
-                return o;
-            };
-            double cur0 = areaOf(M0);
-            std::vector<std::uint32_t> moved;
-            // Which side gives cells away. Exactly one transfer happens, so the
-            // M0 -> M1 move below must not also run after the M1 -> M0 branch has
-            // already applied its own move (doing both cancels the first out).
-            bool fromOne = false;
-            if (cur0 > target0) {
-                for (const std::uint32_t i : byCutline(M0)) {
-                    if (cur0 <= target0) {
-                        break;
-                    }
-                    cur0 -= area_[i];
-                    moved.push_back(i);
-                }
-            } else {
-                for (const std::uint32_t i : byCutline(M1)) {
-                    if (cur0 >= target0) {
-                        break;
-                    }
-                    cur0 += area_[i];
-                    moved.push_back(i);
-                }
-                std::vector<char> gone(numMovable_, 0);
-                for (const std::uint32_t i : moved) {
-                    gone[i] = 1;
-                }
-                std::vector<std::uint32_t> keep;
-                for (const std::uint32_t i : M1) {
-                    if (!gone[i]) {
-                        keep.push_back(i);
-                    }
-                }
-                M1 = keep;
-                M0.insert(M0.end(), moved.begin(), moved.end());
-                fromOne = true;
-            }
-            if (cur0 > target0 && !fromOne) {
-                std::vector<char> gone(numMovable_, 0);
-                for (const std::uint32_t i : moved) {
-                    gone[i] = 1;
-                }
-                std::vector<std::uint32_t> keep;
-                for (const std::uint32_t i : M0) {
-                    if (!gone[i]) {
-                        keep.push_back(i);
-                    }
-                }
-                M0 = keep;
-                M1.insert(M1.end(), moved.begin(), moved.end());
-            }
-        }
-    }
-
+    // No rebalancing of M0/M1 against B0/B1 here. Algorithm 1 fixes the two
+    // sets at line 13 -- "(M_0, M_1) = {movable cells in S_0, S_1}" -- from the
+    // cell-area cutline, and line 15 moves them into the whitespace halves. That
+    // pairing IS the equalisation, and Figure 3's caption says so: "adjustment
+    // of cell-area to whitespace median BY NONLINEAR SCALING". A separate pass
+    // that hands cells across Cc before the scaling is not in the paper and
+    // overrides the very cutline the algorithm defines the sub-regions by.
     nonlinearScale(M0, bA0, bA1, b0, b1, B.vertical, cutCoord);
     nonlinearScale(M1, bB0, bB1, b0, b1, B.vertical, cutCoord);
 
@@ -1930,6 +1890,23 @@ void SimplePlacer::Impl::lookAheadLegalize() {
                 clusterArea += grid_.occ[grid_.at(ix, iy)];
             }
         }
+        // A documented deviation from Algorithm 1 line 3, which asks for "a
+        // minimal containing rectangular region R superset c with density(R) <= g"
+        // and nothing else.
+        //
+        // When the placement has not spread at all -- the state the very first
+        // look-ahead legalization sees, because section 4.1 is explicitly
+        // area-blind -- one cluster already holds most of the movable area, and
+        // the minimal legal-density rectangle around it is only as big as those
+        // cells strictly need. The recursion is then confined to that
+        // sub-rectangle, the rest of the die is never visited, and the cells that
+        // sit inside it still have to be legalized by the same recursion: the
+        // result is a placement with an empty margin and a crowded middle.
+        //
+        // Measured on adaptec1: minimal rectangles throughout give 6.85e8 against
+        // 4.22e8 with this fallback, at the same overflow. Removing it is not
+        // something the paper's rule survives on this benchmark, so it stays and
+        // is named rather than smuggled in.
         if (par_.globalClusterFrac > 0.0 && totalCellArea_ > 0.0 &&
             clusterArea >= par_.globalClusterFrac * totalCellArea_) {
             std::size_t ux0 = grid_.nbx, uy0 = grid_.nby, ux1 = 0, uy1 = 0;
@@ -1952,6 +1929,19 @@ void SimplePlacer::Impl::lookAheadLegalize() {
                 ++globalRegions_;
             }
         }
+
+        // Algorithm 1 line 3: "Find a minimal rectangular region R superset c with
+        // density(R) <= g". Grow while the density is still above g, and stop the
+        // moment it is not.
+        //
+        // One layer on every side per step, rather than one layer on whichever
+        // single side adds the most area. A collapsed placement needs a region of
+        // most of the die to reach density <= g, and growing one side at a time
+        // produces a 1 x N strip: the same area, but a region the recursion then
+        // subdivides along its long axis only, so cells are pushed into a narrow
+        // band and the whitespace either side is never reached. Measured on
+        // adaptec1, single-side growth shipped 7.41e8 against 4.22e8 for the same
+        // algorithm with a compact region.
         while (densityOf(rx0, rx1, ry0, ry1) > g_) {
             const bool canL = rx0 > 0;
             const bool canR = rx1 + 1 < grid_.nbx;
@@ -1960,68 +1950,16 @@ void SimplePlacer::Impl::lookAheadLegalize() {
             if (!(canL || canR || canB || canT)) {
                 break;  // the whole die is overfull; nothing more to give
             }
-            // Expand towards the side that contributes the most available area,
-            // ties broken in a fixed order so the result is deterministic.
-            //
-            // The score is the available area *added*, which is never negative.
-            // Scoring the net (available - occupied) instead looks equivalent and
-            // is not: the starting bin is overfull by construction, so that
-            // quantity is negative there, no side could beat a zero seed, the
-            // growth gave up immediately, and every cluster rectangle stayed one
-            // bin across -- so the legalizer never had any room to spread into
-            // and the placement kept its quadratic-solve degeneracy.
-            double bestGain = -1.0;
-            int bestSide = -1;
-            const bool allowed[4] = {canL, canR, canB, canT};
-            double baseAvail = 0.0;
-            for (std::size_t iy = ry0; iy <= ry1; ++iy) {
-                for (std::size_t ix = rx0; ix <= rx1; ++ix) {
-                    baseAvail += grid_.avail[grid_.at(ix, iy)];
-                }
-            }
-            // Only sides that still have room are evaluated -- an expansion past
-            // the die would read outside the grid.
-            const auto gain = [&](int side) -> double {
-                std::size_t a0 = rx0, a1 = rx1, b0 = ry0, b1 = ry1;
-                if (side == 0) {
-                    --a0;
-                } else if (side == 1) {
-                    ++a1;
-                } else if (side == 2) {
-                    --b0;
-                } else {
-                    ++b1;
-                }
-                double a = 0.0;
-                for (std::size_t iy = b0; iy <= b1; ++iy) {
-                    for (std::size_t ix = a0; ix <= a1; ++ix) {
-                        a += grid_.avail[grid_.at(ix, iy)];
-                    }
-                }
-                return a - baseAvail;
-            };
-            for (int side = 0; side < 4; ++side) {
-                if (!allowed[side]) {
-                    continue;
-                }
-                const double g = gain(side);
-                if (g > bestGain) {
-                    bestGain = g;
-                    bestSide = side;
-                }
-            }
-            if (bestSide < 0) {
-                // No side could be scored (all gains were unusable). Growing
-                // anyway would walk the rectangle off the grid, so stop here.
-                break;
-            }
-            if (bestSide == 0) {
+            if (canL) {
                 --rx0;
-            } else if (bestSide == 1) {
+            }
+            if (canR) {
                 ++rx1;
-            } else if (bestSide == 2) {
+            }
+            if (canB) {
                 --ry0;
-            } else {
+            }
+            if (canT) {
                 ++ry1;
             }
         }
@@ -2064,7 +2002,7 @@ void SimplePlacer::Impl::lookAheadLegalize() {
         std::vector<double> macroX0(nFixed), macroY0(nFixed), macroX1(nFixed), macroY1(nFixed);
         for (std::size_t j = 0; j < nFixed; ++j) {
             const std::uint32_t fv = fixVertex_[j];
-            const Vertex &fv2 = graph_.getVertex(fv);
+            const Vertex &fv2 = graph_.getCell(fv);
             macroX0[j] = vx_[fv];
             macroY0[j] = vy_[fv];
             macroX1[j] = vx_[fv] + fv2.width;
@@ -2086,7 +2024,9 @@ void SimplePlacer::Impl::lookAheadLegalize() {
                 }
                 return acc;
             },
-            [](std::size_t a, std::size_t b) { return a + b; });
+            [](std::size_t a, std::size_t b) {
+                return a + b;
+            });
         ktlog.trace(
             "  residual: excess on macro bins {:.4g}, on free bins {:.4g} "
             "({:.0f} macro bins); cells overlapping a macro: {}",
@@ -2479,7 +2419,7 @@ void SimplePlacer::Impl::writeDensityMap(const std::string &path, const std::vec
     }
     // Fixed macros, outlined, so blockage is distinguishable from legal space.
     for (const std::uint32_t fv : fixVertex_) {
-        const Vertex &vert = graph_.getVertex(fv);
+        const Vertex &vert = graph_.getCell(fv);
         if (!(vert.width > 0.0) || !(vert.height > 0.0)) {
             continue;
         }
@@ -2596,6 +2536,8 @@ SimplResult SimplePlacer::Impl::run(const SimplParams &P, const std::string &plo
             par_.stripeScaleMode = SimplParams::StripeScale::Both;
         } else if (v == "none") {
             par_.stripeScaleMode = SimplParams::StripeScale::None;
+        } else if (v == "fill") {
+            par_.stripeScaleMode = SimplParams::StripeScale::Fill;
         } else {
             ktlog.warning("unknown stripe scale mode '{}', keeping tight", v);
         }
@@ -2711,7 +2653,7 @@ SimplResult SimplePlacer::Impl::run(const SimplParams &P, const std::string &plo
         movRegion_.assign(numMovable_, constraintMgr::kNoRegion);
         if (fences_ != nullptr) {
             for (std::size_t i = 0; i < numMovable_; ++i) {
-                movRegion_[i] = graph_.getVertex(movVertex_[i]).regionId;
+                movRegion_[i] = graph_.getCell(movVertex_[i]).regionId;
             }
         }
     }  // "simpl-setup"
@@ -3018,6 +2960,9 @@ SimplResult SimplePlacer::Impl::run(const SimplParams &P, const std::string &plo
     // spread enough (see SimplParams::alphaDecay).
     double alphaScale = 1.0;
     double bestUpper = std::numeric_limits<double>::max();
+    // Overflow of the placement `bestUpper` came from. Primary key for choosing
+    // it; see the selection block below.
+    double bestUpperOvf = std::numeric_limits<double>::max();
     int stale = 0;
     bool converged = false;
     double buildAcc = 0.0;
@@ -3057,6 +3002,13 @@ SimplResult SimplePlacer::Impl::run(const SimplParams &P, const std::string &plo
         std::vector<double> keepX = pinX_;
         std::vector<double> keepY = pinY_;
         double prevPassOvf = std::numeric_limits<double>::max();
+        // One pass per global-placement iteration. The paper alternates
+        // "(1) look-ahead legalization, (2) updates to anchors and the B2B net
+        // model, and (3) solution of the linear system" -- a single projection per
+        // iteration. Re-projecting several times inside one iteration is not in
+        // it, and it spends the thing the flow exists to show: every extra pass
+        // spreads cells further before the anchors and the solve get a chance to
+        // pull them back.
         for (std::size_t pass = 0;
              par_.lookAhead && pass < std::max<std::size_t>(par_.lalPasses, 1); ++pass) {
             blocksProcessed_ = 0;
@@ -3109,16 +3061,39 @@ SimplResult SimplePlacer::Impl::run(const SimplParams &P, const std::string &plo
         curve.emplace_back(upperHpwl, lowerHpwl);
         res_.gap = gap;
 
-        if (upperHpwl < bestUpper - 1e-12) {
+        // Which upper bound to ship. The paper ships the last one, and the last
+        // one is legal by construction: look-ahead legalization is defined as a
+        // projection onto legal placements, so its defining property is low
+        // overflow, and "upper bound" is a term about wirelength bounds, not
+        // about legality.
+        //
+        // Ranking by wirelength alone throws that property away, and picks the
+        // least legalized iteration in the run: the earlier a placement is, the
+        // more collapsed it is, the shorter its wires, and the more overlap it
+        // has. On adaptec1 that selected iteration 1 -- overflow 0.222, the
+        // worst of the legalized candidates -- over iteration 10 at 0.199 with a
+        // third more wirelength, and the final legalizer was then handed a
+        // placement a fifth of the way to legal.
+        //
+        // So legality is the primary key and wirelength the tie-break, with the
+        // tolerance wide enough that ordinary iteration-to-iteration noise does
+        // not count as a legality win. A wirelength win inside that band is a
+        // real win: it is the same placement quality for less wire.
+        const bool moreLegal = upperOvf < bestUpperOvf * (1.0 - par_.upperOvfTol);
+        const bool sameLegal = upperOvf <= bestUpperOvf * (1.0 + par_.upperOvfTol);
+        if (moreLegal || (sameLegal && upperHpwl < bestUpper - 1e-12)) {
+            bestUpperOvf = upperOvf;
             bestUpper = upperHpwl;
             bestX = upper;
             bestY = upperY;
             bestLower = lower;
             bestLowerY = lowerY;
             bestIter = it;
-            stale = 0;
-        } else {
+        }
+        if (!moreLegal && !(sameLegal && upperHpwl < bestUpper - 1e-12)) {
             ++stale;
+        } else {
+            stale = 0;
         }
 
         const double relGapTrace = upperHpwl > 0.0 ? gap / upperHpwl : 0.0;
@@ -3170,11 +3145,23 @@ SimplResult SimplePlacer::Impl::run(const SimplParams &P, const std::string &plo
             gapRef = gap;  // informative only; the trace reports it
         }
         if (gap > 0.0 && it > par_.gapReferenceIter && upperHpwl > 0.0) {
-            const double relGap = gap / upperHpwl;
-            if (relGap <= par_.gapTightFrac) {
-                converged = true;
-            } else if (relGap <= par_.gapRelaxedFrac && stale >= static_cast<int>(par_.patience)) {
-                converged = true;
+            // The paper's rule, taken literally: the reference is "the gap at the
+            // 10th iteration", not a fraction of the placement. Termination is
+            // (1) the gap reduced to 25% of that reference AND the upper-bound
+            // solution no longer improving, or (2) the gap below 10% of it.
+            //
+            // This replaces a scale-free reading that compared gap/upper against
+            // 0.10 and 0.25. That one fires as soon as the bounds agree, and two
+            // bounds that are equally bad do agree: on adaptec1 it ended the run
+            // at iteration 11 with the bounds at 3.4e8 and 3.6e8, neither having
+            // been below 0.16 scaled overflow.
+            const double ref = gapRef > 0.0 ? gapRef : gap;
+            const double relToRef = gap / ref;
+            if (relToRef < par_.gapTightFrac) {
+                converged = true;  // (2) below 10% of the reference gap
+            } else if (relToRef <= par_.gapRelaxedFrac &&
+                       stale >= static_cast<int>(par_.patience)) {
+                converged = true;  // (1) within 25% of it, and no longer improving
             }
         } else if (gap < 0.0 && it > par_.gapReferenceIter) {
             // The negative-gap guard from the `sawInvalidGap` block: a negative
@@ -3426,7 +3413,7 @@ SimplResult SimplePlacer::Impl::run(const SimplParams &P, const std::string &plo
 
 // ---------------------------------------------------------------------------
 
-SimplePlacer::SimplePlacer(PlacementDB &db) : pImpl(std::make_unique<Impl>(db)) {}
+SimplePlacer::SimplePlacer(ktDM &db) : pImpl(std::make_unique<Impl>(db)) {}
 SimplePlacer::~SimplePlacer() = default;
 SimplePlacer::SimplePlacer(SimplePlacer &&) noexcept = default;
 SimplePlacer &SimplePlacer::operator=(SimplePlacer &&) noexcept = default;

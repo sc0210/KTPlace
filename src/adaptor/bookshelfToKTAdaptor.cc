@@ -126,8 +126,8 @@ std::vector<std::string> BookshelfInputAdapter::tokenize(const std::string &line
     return tokens;
 }
 
-BookshelfInputAdapter::BookshelfInputAdapter(std::unique_ptr<PlacementDB> database)
-    : db(database ? std::move(database) : std::make_unique<PlacementDB>()) {}
+BookshelfInputAdapter::BookshelfInputAdapter(std::unique_ptr<ktDM> database)
+    : db(database ? std::move(database) : std::make_unique<ktDM>()) {}
 
 BookshelfInputAdapter::~BookshelfInputAdapter() = default;
 
@@ -147,8 +147,8 @@ bool BookshelfInputAdapter::recognises(const std::string &dirPath) const {
            fs::exists((fs::path(dirPath) / (stem + ".nodes.gz")), ec);
 }
 
-std::unique_ptr<PlacementDB> BookshelfInputAdapter::read(const std::string &dirPath) {
-    return readFromDirectory(dirPath) ? releasePlacementDB() : nullptr;
+std::unique_ptr<ktDM> BookshelfInputAdapter::read(const std::string &dirPath) {
+    return readFromDirectory(dirPath) ? releaseDM() : nullptr;
 }
 
 bool BookshelfInputAdapter::readFromDirectory(const std::string &dirPath) {

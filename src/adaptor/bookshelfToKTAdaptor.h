@@ -14,10 +14,10 @@
 namespace ktplace {
 
 // Parses Bookshelf files (.nodes, .nets, .pl, .scl, .wts), named after the
-// directory they sit in, into the internal PlacementDB.
+// directory they sit in, into the internal ktDM.
 class BookshelfInputAdapter final : public InputReader {
 public:
-    explicit BookshelfInputAdapter(std::unique_ptr<PlacementDB> db = nullptr);
+    explicit BookshelfInputAdapter(std::unique_ptr<ktDM> db = nullptr);
 
     ~BookshelfInputAdapter() override;
 
@@ -30,7 +30,7 @@ public:
     BookshelfInputAdapter &operator=(BookshelfInputAdapter &&) noexcept;
 
     [[nodiscard]] bool recognises(const std::string &dirPath) const override;
-    [[nodiscard]] std::unique_ptr<PlacementDB> read(const std::string &dirPath) override;
+    [[nodiscard]] std::unique_ptr<ktDM> read(const std::string &dirPath) override;
     [[nodiscard]] std::string_view formatName() const override {
         return "bookshelf";
     }
@@ -46,18 +46,18 @@ public:
                                      const std::string &sclFile = "",
                                      const std::string &wtsFile = "");
 
-    // Get the PlacementDB object
+    // Get the ktDM object
 
-    [[nodiscard]] PlacementDB &getPlacementDB() {
+    [[nodiscard]] ktDM &getDM() {
         return *db;
     }
-    [[nodiscard]] const PlacementDB &getPlacementDB() const {
+    [[nodiscard]] const ktDM &getDM() const {
         return *db;
     }
 
-    // Release ownership of the PlacementDB
+    // Release ownership of the ktDM
 
-    [[nodiscard]] std::unique_ptr<PlacementDB> releasePlacementDB() {
+    [[nodiscard]] std::unique_ptr<ktDM> releaseDM() {
         return std::move(db);
     }
 
@@ -78,7 +78,7 @@ private:
     std::vector<std::string> tokenize(const std::string &line);
 
     // Internal state
-    std::unique_ptr<PlacementDB> db;
+    std::unique_ptr<ktDM> db;
     std::unordered_map<std::string, double> netWeights;  // From .wts file
 };
 

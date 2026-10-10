@@ -1,10 +1,11 @@
-// @file kt_dm.cc// Implementation of PlacementDB using PIMPL pattern with kt_graph
+// @file kt_dm.cc// Implementation of ktDM using PIMPL pattern with kt_graph
 
 
 #include "datamodel/kt_dm.h"
 
 #include "constraint/kt_constraintMgr.h"
 #include "datamodel/kt_graph.h"
+#include "datamodel/kt_solutionMgr.h"
 #include "util/kt_log.h"
 #include "util/kt_reportTable.h"
 
@@ -22,87 +23,36 @@
 
 namespace ktplace {
 
-// Forward declaration for RowData
-struct SubrowData {
-    double originX = 0.0;
-    double numSites = 0.0;
-};
+// ktDM implementation
 
-class RowData {
-public:
-    double coordinate = 0.0;
-    double height = 0.0;
-    double sitewidth = 0.0;
-    double sitespacing = 0.0;
-    std::vector<SubrowData> subrows;
-};
-
-// PIMPL implementation
-class PlacementDB::Impl {
-public:
-    // Graph structure (replaces separate _cells, _nets, _pins vectors)
-    Graph graph;
-
-    // Rows (layout information)
-    std::vector<RowData> rows;
-
-    // Die area
-    double dieXMin = 0.0;
-    double dieYMin = 0.0;
-    double dieXMax = 0.0;
-    double dieYMax = 0.0;
-
-    // Placement regions the design declared. Owned here because they are design
-    // data: the reader fills them in once, and every stage reads them off the
-    // database rather than being handed a pointer that has to be kept alive
-    // alongside it.
-    constraintMgr fences;
-};
-
-// PlacementDB implementation
-
-PlacementDB::PlacementDB() : pImpl(std::make_unique<Impl>()) {}
-
-PlacementDB::~PlacementDB() = default;
-
-PlacementDB::PlacementDB(PlacementDB &&) noexcept = default;
-PlacementDB &PlacementDB::operator=(PlacementDB &&) noexcept = default;
-
-std::size_t PlacementDB::addCell(const std::string &name, double width, double height,
-                                 bool isTerminal) {
-    std::size_t id = pImpl->graph.addVertex(VertexType::Cell, name);
-    Vertex &v = pImpl->graph.getVertex(id);
+std::size_t ktDM::addCell(const std::string &name, double width, double height, bool isTerminal) {
+    const std::size_t id = graph.addCell(name);
+    Vertex &v = graph.getCell(id);
     v.width = width;
     v.height = height;
     v.isTerminal = isTerminal;
     return id;
 }
 
-bool PlacementDB::hasCell(const std::string &name) const {
-    return pImpl->graph.hasVertex(name) &&
-           pImpl->graph.getVertexType(pImpl->graph.getVertexId(name)) == VertexType::Cell;
+bool ktDM::hasCell(const std::string &name) const {
+    return graph.hasCell(name);
 }
 
-std::size_t PlacementDB::getCellId(const std::string &name) const {
-    std::size_t id = pImpl->graph.getVertexId(name);
-    if (pImpl->graph.getVertexType(id) != VertexType::Cell) {
-        throw std::runtime_error(name + " is not a cell");
-    }
-    return id;
+std::size_t ktDM::getCellId(const std::string &name) const {
+    return graph.getCellId(name);
 }
 
-std::size_t PlacementDB::getNumCells() const {
-    return pImpl->graph.getNumVertices(VertexType::Cell);
+std::size_t ktDM::getNumCells() const {
+    return graph.getNumCells();
 }
 
-std::size_t PlacementDB::getNumTerminals() const {
-    const Graph &g = pImpl->graph;
+std::size_t ktDM::getNumTerminals() const {
+    const Graph &g = graph;
     return tbb::parallel_reduce(
-        tbb::blocked_range<std::size_t>(0, g.getNumVertices()), std::size_t(0),
+        tbb::blocked_range<std::size_t>(0, g.getNumCells()), std::size_t(0),
         [&](const tbb::blocked_range<std::size_t> &r, std::size_t acc) {
-            for (std::size_t i = r.begin(); i != r.end(); ++i) {
-                const Vertex &v = g.getVertex(i);
-                if (v.type == VertexType::Cell && v.isTerminal) {
+            for (std::size_t i = r.begin(); i < r.end(); ++i) {
+                if (g.getCell(i).isTerminal) {
                     ++acc;
                 }
             }
@@ -113,275 +63,132 @@ std::size_t PlacementDB::getNumTerminals() const {
         });
 }
 
-std::size_t PlacementDB::addNet(const std::string &name, double weight) {
-    std::size_t id = pImpl->graph.addVertex(VertexType::Net, name);
-    Vertex &v = pImpl->graph.getVertex(id);
-    v.weight = weight;
-    return id;
+std::size_t ktDM::addNet(const std::string &name, double weight) {
+    return graph.addNet(name, weight);
 }
 
-bool PlacementDB::hasNet(const std::string &name) const {
-    return pImpl->graph.hasVertex(name) &&
-           pImpl->graph.getVertexType(pImpl->graph.getVertexId(name)) == VertexType::Net;
+bool ktDM::hasNet(const std::string &name) const {
+    return graph.hasNet(name);
 }
 
-std::size_t PlacementDB::getNetId(const std::string &name) const {
-    std::size_t id = pImpl->graph.getVertexId(name);
-    if (pImpl->graph.getVertexType(id) != VertexType::Net) {
-        throw std::runtime_error(name + " is not a net");
-    }
-    return id;
+std::size_t ktDM::getNetId(const std::string &name) const {
+    return graph.getNetId(name);
 }
 
-std::size_t PlacementDB::getNumNets() const {
-    return pImpl->graph.getNumVertices(VertexType::Net);
+std::size_t ktDM::getNumNets() const {
+    return graph.getNumNets();
 }
 
-std::size_t PlacementDB::addPin(const std::string &cellName, const std::string &netName,
-                                double offsetX, double offsetY, bool isInput) {
-    std::size_t cellId = getCellId(cellName);
-    std::size_t netId = getNetId(netName);
-
-    PinDirection dir = isInput ? PinDirection::Input : PinDirection::Output;
-    std::size_t edgeId = pImpl->graph.addEdge(cellId, netId, dir);
-
-    Edge &e = pImpl->graph.getEdge(edgeId);
-    e.offsetX = offsetX;
-    e.offsetY = offsetY;
-
-    return edgeId;
+std::size_t ktDM::addPin(const std::string &cellName, const std::string &netName, double offsetX,
+                         double offsetY, bool isInput) {
+    const std::size_t cellId = getCellId(cellName);
+    const std::size_t netId = getNetId(netName);
+    return graph.addPin(cellId, netId, isInput ? PinRole::Receiver : PinRole::Driver, offsetX,
+                        offsetY);
 }
 
-std::size_t PlacementDB::getNumPins() const {
-    return pImpl->graph.getNumEdges();
+std::size_t ktDM::getNumPins() const {
+    return graph.getNumPins();
 }
 
-void PlacementDB::setCellPosition(std::size_t cellId, double x, double y) {
-    Vertex &v = pImpl->graph.getVertex(cellId);
-    if (v.type != VertexType::Cell) {
-        throw std::runtime_error("Invalid cell ID");
-    }
+void ktDM::setCellPosition(std::size_t cellId, double x, double y) {
+    Vertex &v = graph.getCell(cellId);
     v.x = x;
     v.y = y;
 }
 
-void PlacementDB::setCellPosition(const std::string &cellName, double x, double y) {
+void ktDM::setCellPosition(const std::string &cellName, double x, double y) {
     setCellPosition(getCellId(cellName), x, y);
 }
 
-std::pair<double, double> PlacementDB::getCellPosition(std::size_t cellId) const {
-    const Vertex &v = pImpl->graph.getVertex(cellId);
-    if (v.type != VertexType::Cell) {
-        throw std::runtime_error("Invalid cell ID");
-    }
+std::pair<double, double> ktDM::getCellPosition(std::size_t cellId) const {
+    const Vertex &v = graph.getCell(cellId);
     return {v.x, v.y};
 }
 
-std::pair<double, double> PlacementDB::getCellPosition(const std::string &cellName) const {
+std::pair<double, double> ktDM::getCellPosition(const std::string &cellName) const {
     return getCellPosition(getCellId(cellName));
 }
 
-void PlacementDB::setCellFixed(std::size_t cellId, bool fixed) {
-    Vertex &v = pImpl->graph.getVertex(cellId);
-    if (v.type != VertexType::Cell) {
-        throw std::runtime_error("Invalid cell ID");
-    }
-    v.isFixed = fixed;
+void ktDM::setCellFixed(std::size_t cellId, bool fixed) {
+    graph.getCell(cellId).isFixed = fixed;
 }
 
-void PlacementDB::setCellFixed(const std::string &cellName, bool fixed) {
+void ktDM::setCellFixed(const std::string &cellName, bool fixed) {
     setCellFixed(getCellId(cellName), fixed);
 }
 
-bool PlacementDB::isCellFixed(std::size_t cellId) const {
-    const Vertex &v = pImpl->graph.getVertex(cellId);
-    if (v.type != VertexType::Cell) {
-        throw std::runtime_error("Invalid cell ID");
-    }
-    return v.isFixed;
+bool ktDM::isCellFixed(std::size_t cellId) const {
+    return graph.getCell(cellId).isFixed;
 }
 
-bool PlacementDB::isCellFixed(const std::string &cellName) const {
+bool ktDM::isCellFixed(const std::string &cellName) const {
     return isCellFixed(getCellId(cellName));
 }
 
-std::size_t PlacementDB::addRow(double coordinate, double height, double sitewidth,
-                                double sitespacing) {
-    RowData row;
-    row.coordinate = coordinate;
-    row.height = height;
-    row.sitewidth = sitewidth;
-    row.sitespacing = sitespacing;
-
-    const std::size_t id = pImpl->rows.size();
-    pImpl->rows.push_back(row);
-    return id;
+std::size_t ktDM::addRow(double coordinate, double height, double sitewidth, double sitespacing) {
+    return dieInfo.addRow(coordinate, height, sitewidth, sitespacing);
 }
 
-std::size_t PlacementDB::addSubrow(std::size_t rowId, double originX, double numSites) {
-    if (rowId >= pImpl->rows.size()) {
-        return static_cast<std::size_t>(-1);
-    }
-    pImpl->rows[rowId].subrows.push_back(SubrowData{originX, numSites});
-    return pImpl->rows[rowId].subrows.size() - 1;
+std::size_t ktDM::addSubrow(std::size_t rowId, double originX, double numSites) {
+    return dieInfo.addSubrow(rowId, originX, numSites);
 }
 
-std::size_t PlacementDB::getNumRows() const {
-    return pImpl->rows.size();
+void ktDM::clear() {
+    graph.clear();
+    dieInfo.clear();
 }
 
-std::vector<PlacementDB::RowInfo> PlacementDB::getRows() const {
-    std::vector<RowInfo> out;
-    out.reserve(pImpl->rows.size());
-    for (const RowData &r : pImpl->rows) {
-        RowInfo ri;
-        ri.coordinate = r.coordinate;
-        ri.height = r.height;
-        ri.sitewidth = r.sitewidth;
-        ri.sitespacing = r.sitespacing;
-        ri.subrows.reserve(r.subrows.size());
-        for (const SubrowData &sr : r.subrows) {
-            ri.subrows.push_back(SubrowInfo{sr.originX, sr.numSites});
-        }
-        out.push_back(std::move(ri));
-    }
-    return out;
-}
-
-Graph &PlacementDB::getGraphImpl() {
-    return pImpl->graph;
-}
-
-const Graph &PlacementDB::getGraphImpl() const {
-    return pImpl->graph;
-}
-
-void PlacementDB::setDieArea(double xMin, double yMin, double xMax, double yMax) {
-    pImpl->dieXMin = xMin;
-    pImpl->dieYMin = yMin;
-    pImpl->dieXMax = xMax;
-    pImpl->dieYMax = yMax;
-}
-
-std::pair<std::pair<double, double>, std::pair<double, double>> PlacementDB::getDieArea() const {
-    return {{pImpl->dieXMin, pImpl->dieYMin}, {pImpl->dieXMax, pImpl->dieYMax}};
-}
-
-const std::vector<std::size_t> &PlacementDB::getNetPins(std::size_t netId) const {
-    const Vertex &v = pImpl->graph.getVertex(netId);
-    if (v.type != VertexType::Net) {
-        throw std::runtime_error("Invalid net ID");
-    }
-    return v.inEdges;  // Pins connect to nets as incoming edges
-}
-
-const std::vector<std::size_t> &PlacementDB::getCellPins(std::size_t cellId) const {
-    const Vertex &v = pImpl->graph.getVertex(cellId);
-    if (v.type != VertexType::Cell) {
-        throw std::runtime_error("Invalid cell ID");
-    }
-    return v.outEdges;  // Pins connect from cells as outgoing edges
-}
-
-void PlacementDB::clear() {
-    pImpl->graph.clear();
-    pImpl->rows.clear();
-    pImpl->dieXMin = pImpl->dieYMin = pImpl->dieXMax = pImpl->dieYMax = 0.0;
-}
-
-std::pair<std::size_t, std::size_t> PlacementDB::getStats() const {
+std::pair<std::size_t, std::size_t> ktDM::getStats() const {
     return {getNumCells(), getNumNets()};
 }
 
-std::array<double, 4> placementDieBox(const PlacementDB &db) {
-    const Graph &g = db.getGraph();
-    // The fixed cells: the I/O pad ring bounds the die in a Bookshelf design.
-    double lo[2] = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max()};
-    double hi[2] = {-std::numeric_limits<double>::max(), -std::numeric_limits<double>::max()};
-    const std::size_t nv = g.getNumVertices();
-    for (std::size_t v = 0; v < nv; ++v) {
-        const Vertex &vert = g.getVertex(v);
-        if (vert.type != VertexType::Cell) {
-            continue;
-        }
-        if (!vert.isFixed && !vert.isTerminal) {
-            continue;
-        }
-        lo[0] = std::min(lo[0], vert.x);
-        lo[1] = std::min(lo[1], vert.y);
-        hi[0] = std::max(hi[0], vert.x + std::max(vert.width, 1.0));
-        hi[1] = std::max(hi[1], vert.y + std::max(vert.height, 1.0));
-    }
-    std::array<double, 4> box{lo[0], lo[1], hi[0], hi[1]};
-    const bool haveFixed = (box[2] > box[0]) && (box[3] > box[1]);
-
-    // A declared die area, when the format carries one and it contains every
-    // fixed cell. A declared area that excludes a fixed cell is not describing
-    // the same die the pads describe, so it is not trusted.
-    const auto da = db.getDieArea();
-    if (da.second.first > da.first.first && da.second.second > da.first.second) {
-        bool contains = true;
-        for (std::size_t v = 0; v < nv; ++v) {
-            const Vertex &vert = g.getVertex(v);
-            if (vert.type != VertexType::Cell || !vert.isFixed) {
-                continue;
-            }
-            if (vert.x < da.first.first - 1.0 || vert.y < da.first.second - 1.0 ||
-                vert.x + vert.width > da.second.first + 1.0 ||
-                vert.y + vert.height > da.second.second + 1.0) {
-                contains = false;
-                break;
-            }
-        }
-        if (contains) {
-            box = {da.first.first, da.first.second, da.second.first, da.second.second};
-        }
-    }
-
-    // The rows, unioned in. A cell in a row is legal by definition of a row, and
-    // for adaptec3 the rows reach below the fixed cells, so a box without them
-    // excludes a row the legalizer is right to have used.
-    double rlo = std::numeric_limits<double>::max(), rhi = -std::numeric_limits<double>::max();
-    double blo = std::numeric_limits<double>::max(), bhi = -std::numeric_limits<double>::max();
-    bool anyRow = false;
-    for (const PlacementDB::RowInfo &ri : db.getRows()) {
-        if (!(ri.pitch() > 0.0)) {
-            continue;
-        }
-        rlo = std::min(rlo, ri.coordinate);
-        rhi = std::max(rhi, ri.coordinate + ri.height);
-        blo = std::min(blo, ri.xlo());
-        bhi = std::max(bhi, ri.xhi());
-        anyRow = true;
-    }
-    if (anyRow && (bhi > blo) && (rhi > rlo)) {
-        if (!haveFixed || !((box[2] > box[0]) && (box[3] > box[1]))) {
-            box = {blo, rlo, bhi, rhi};
-        } else {
-            box = {std::min(box[0], blo), std::min(box[1], rlo), std::max(box[2], bhi),
-                   std::max(box[3], rhi)};
-        }
-    }
-
-    if (!((box[2] > box[0]) && (box[3] > box[1]))) {
-        // Genuinely nothing to go on: a 1x1 box keeps every division downstream
-        // finite. The density grid in particular reports a utilisation of 1e13%
-        // on a zero-area die, which poisons the look-ahead legalizer.
-        return {0.0, 0.0, 1.0, 1.0};
-    }
-    return box;
+std::size_t ktDM::getNumRows() const {
+    return dieInfo.getNumRows();
 }
 
+const std::vector<RowInfo> &ktDM::getRows() const {
+    return dieInfo.getRows();
+}
 
-PlacementDB::Utilisation PlacementDB::measureUtilisation() const {
+void ktDM::setDieArea(double xMin, double yMin, double xMax, double yMax) {
+    dieInfo.setDieArea(xMin, yMin, xMax, yMax);
+}
+
+std::pair<std::pair<double, double>, std::pair<double, double>> ktDM::getDieArea() const {
+    return dieInfo.getDieArea();
+}
+
+const std::vector<std::size_t> &ktDM::getNetPins(std::size_t netId) const {
+    return graph.getNetPins(netId);
+}
+
+const std::vector<std::size_t> &ktDM::getCellPins(std::size_t cellId) const {
+    return graph.getCellPins(cellId);
+}
+
+const constraintMgr &ktDM::constraints() const {
+    return fences;
+}
+
+std::array<double, 4> ktDM::placementDieBox() const {
+    return ktplace::placementDieBox(dieInfo, graph);
+}
+
+void ktDM::setConstraints(constraintMgr regions) {
+    fences = std::move(regions);
+}
+
+bool ktDM::hasFences() const {
+    return !fences.regions().empty();
+}
+
+ktDM::Utilisation ktDM::measureUtilisation() const {
     Utilisation u;
     const Graph &g = getGraph();
-    const std::size_t nv = g.getNumVertices();
+    const std::size_t nv = g.getNumCells();
     for (std::size_t v = 0; v < nv; ++v) {
-        const Vertex &vert = g.getVertex(v);
-        if (vert.type != VertexType::Cell) {
-            continue;
-        }
+        const Vertex &vert = g.getCell(v);
         const double a = vert.width * vert.height;
         // A terminal is fixed area, not absent area. In the ISPD 2005 Bookshelf
         // suites the macros *are* the terminals, so skipping them reports adaptec1
@@ -408,9 +215,8 @@ PlacementDB::Utilisation PlacementDB::measureUtilisation() const {
     // unplaceable at any density.
     if (u.rowHeight > 0.0) {
         for (std::size_t v = 0; v < nv; ++v) {
-            const Vertex &vert = g.getVertex(v);
-            if (vert.type == VertexType::Cell && !vert.isFixed && !vert.isTerminal &&
-                vert.height > u.rowHeight * 1.5) {
+            const Vertex &vert = g.getCell(v);
+            if (!vert.isFixed && !vert.isTerminal && vert.height > u.rowHeight * 1.5) {
                 ++u.multiRow;
             }
         }
@@ -418,7 +224,7 @@ PlacementDB::Utilisation PlacementDB::measureUtilisation() const {
     return u;
 }
 
-void PlacementDB::reportUtilisation() const {
+void ktDM::reportUtilisation() const {
     const Utilisation u = measureUtilisation();
     // Movable demand against the rows, which decides whether the design fits. The
     // fixed cells already occupy the rows rather than compete for them, so
@@ -453,19 +259,8 @@ void PlacementDB::reportUtilisation() const {
     // when it picks the path.
 }
 
-const constraintMgr &PlacementDB::constraints() const {
-    return pImpl->fences;
-}
 
-void PlacementDB::setConstraints(constraintMgr fences) {
-    pImpl->fences = std::move(fences);
-}
-
-bool PlacementDB::hasFences() const {
-    return !pImpl->fences.regions().empty();
-}
-
-void PlacementDB::report() const {
+void ktDM::report() const {
     const auto [numCells, numNets] = getStats();
     // What placement did the design ship with? Worth logging: if it is missing or
     // degenerate every placer silently falls back to its own seed, which looks
@@ -476,11 +271,8 @@ void PlacementDB::report() const {
     double loY = 1e300;
     double hiY = -1e300;
     const Graph &g = getGraph();
-    for (std::size_t v = 0; v < g.getNumVertices(); ++v) {
-        const Vertex &vert = g.getVertex(v);
-        if (vert.type != VertexType::Cell || vert.isFixed || vert.isTerminal) {
-            continue;
-        }
+    for (std::size_t v = 0; v < g.getNumCells(); ++v) {
+        const Vertex &vert = g.getCell(v);
         lo = std::min(lo, vert.x);
         hi = std::max(hi, vert.x);
         loY = std::min(loY, vert.y);
@@ -489,12 +281,12 @@ void PlacementDB::report() const {
     }
     ktlog.echo(
         "Loaded placement: {}/{} cells carry a position, bbox x[{:.1f},{:.1f}] y[{:.1f},{:.1f}]",
-        moved, g.getNumVertices(), lo, hi, loY, hiY);
+        moved, g.getNumCells(), lo, hi, loY, hiY);
     ktlog.echo("Loaded: {} cells ({} terminals), {} nets, {} pins, {} rows", numCells,
                getNumTerminals(), numNets, getNumPins(), getNumRows());
 }
 
-std::vector<PlacementDB::Defect> PlacementDB::verify() const {
+std::vector<ktDM::Defect> ktDM::verify() const {
     std::vector<Defect> defects;
     const Graph &g = getGraph();
 
@@ -502,22 +294,19 @@ std::vector<PlacementDB::Defect> PlacementDB::verify() const {
     // a legal placement: the placer spreads over the union of the fixed geometry
     // and the rows, so a checker built from the
     // fixed geometry alone fails every cell in a row that reaches past the pads.
-    const std::array<double, 4> box = placementDieBox(*this);
+    const std::array<double, 4> box = placementDieBox();
     std::size_t outOfDie = 0;
     std::size_t offFence = 0;
-    const std::size_t nv = g.getNumVertices();
+    const std::size_t nv = g.getNumCells();
     // Row height, for deciding what counts as a tall cell below.
     double rowHeight = 0.0;
-    for (const PlacementDB::RowInfo &ri : getRows()) {
+    for (const RowInfo &ri : dieInfo.getRows()) {
         if (ri.height > rowHeight) {
             rowHeight = ri.height;
         }
     }
     for (std::size_t v = 0; v < nv; ++v) {
-        const Vertex &vert = g.getVertex(v);
-        if (vert.type != VertexType::Cell || vert.isFixed || vert.isTerminal) {
-            continue;
-        }
+        const Vertex &vert = g.getCell(v);
         const double eps = 1e-6;
         if (vert.x < box[0] - eps || vert.y < box[1] - eps || vert.x + vert.width > box[2] + eps ||
             vert.y + vert.height > box[3] + eps) {
@@ -542,14 +331,11 @@ std::vector<PlacementDB::Defect> PlacementDB::verify() const {
         double bin = 0.0;
         std::size_t nTall = 0;
         for (std::size_t v = 0; v < nv; ++v) {
-            const Vertex &vert = g.getVertex(v);
-            if (vert.type != VertexType::Cell) {
-                continue;
-            }
+            const Vertex &vert = g.getCell(v);
             // "Tall" against the rows, not an absolute height: a cell more than
             // four rows high cannot be found by a standard-cell-sized bin.
-            const double rows = rowHeight > 0.0 ? vert.height / rowHeight : vert.height;
-            if (rows > 4.0) {
+            const double tall = rowHeight > 0.0 ? vert.height / rowHeight : vert.height;
+            if (tall > 4.0) {
                 ++nTall;
                 continue;
             }
@@ -571,12 +357,9 @@ std::vector<PlacementDB::Defect> PlacementDB::verify() const {
         std::vector<std::size_t> tallCells;
         std::vector<char> isTall(nv, 0);
         for (std::size_t v = 0; v < nv; ++v) {
-            const Vertex &vert = g.getVertex(v);
-            if (vert.type != VertexType::Cell) {
-                continue;
-            }
-            const double rows = rowHeight > 0.0 ? vert.height / rowHeight : vert.height;
-            if (rows > 4.0) {
+            const Vertex &vert = g.getCell(v);
+            const double tall = rowHeight > 0.0 ? vert.height / rowHeight : vert.height;
+            if (tall > 4.0) {
                 tallCells.push_back(v);
                 isTall[v] = 1;
                 continue;
@@ -587,8 +370,8 @@ std::vector<PlacementDB::Defect> PlacementDB::verify() const {
         }
         const double eps = 1e-9;
         const auto hits = [&](std::size_t a, std::size_t b) {
-            const Vertex &p = g.getVertex(a);
-            const Vertex &q = g.getVertex(b);
+            const Vertex &p = g.getCell(a);
+            const Vertex &q = g.getCell(b);
             // Two fixed cells overlapping is the input's business, not ours.
             if (p.isFixed && q.isFixed) {
                 return false;
@@ -627,10 +410,6 @@ std::vector<PlacementDB::Defect> PlacementDB::verify() const {
                 if (b == a) {
                     continue;
                 }
-                const Vertex &q = g.getVertex(b);
-                if (q.type != VertexType::Cell) {
-                    continue;
-                }
                 // Both tall: the same pair is reached from both sides, so keep
                 // only the one where this is the lower vertex index.
                 if (isTall[b] && b < a) {
@@ -655,32 +434,20 @@ std::vector<PlacementDB::Defect> PlacementDB::verify() const {
     return defects;
 }
 
-double PlacementDB::hpwl() const {
-    const Graph &g = getGraph();
-    double total = 0.0;
-    for (std::size_t v = 0; v < g.getNumVertices(); ++v) {
-        const Vertex &net = g.getVertex(v);
-        if (net.type != VertexType::Net || net.inEdges.size() < 2) {
-            continue;
-        }
-        double x0 = std::numeric_limits<double>::max();
-        double x1 = -std::numeric_limits<double>::max();
-        double y0 = std::numeric_limits<double>::max();
-        double y1 = -std::numeric_limits<double>::max();
-        for (const std::size_t eid : net.inEdges) {
-            const Edge &e = g.getEdge(eid);
-            const Vertex &pin = g.getVertex(e.source);
-            if (pin.type != VertexType::Cell) {
-                continue;
-            }
-            x0 = std::min(x0, pin.x + e.offsetX);
-            x1 = std::max(x1, pin.x + e.offsetX + pin.width);
-            y0 = std::min(y0, pin.y + e.offsetY);
-            y1 = std::max(y1, pin.y + e.offsetY + pin.height);
-        }
-        total += (x1 - x0) + (y1 - y0);
-    }
-    return total;
+void ktDM::setPlacementSolution(const solutionMgr &solution) {
+    solution.commitTo(graph);
+}
+
+solutionMgr ktDM::getPlacementSolution() const {
+    return solutionMgr::fromGraph(graph);
+}
+
+double ktDM::hpwl() const {
+    // The one HPWL, in kt_solution.cc. This used to be a second implementation of
+    // the same arithmetic, alongside the ones in SimplePlacer and FastDP; it is
+    // now the same call they all make, over the positions as committed.
+    const solutionMgr sol = getPlacementSolution();
+    return netlistHPWL(graph, sol.xs(), sol.ys());
 }
 
 }  // namespace ktplace

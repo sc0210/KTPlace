@@ -160,7 +160,7 @@ BOOST_AUTO_TEST_CASE(reads_a_minimal_design_from_a_directory) {
     BookshelfInputAdapter adapter;
     BOOST_REQUIRE(adapter.readFromDirectory(dir.file("tiny").string()));
 
-    PlacementDB &db = adapter.getPlacementDB();
+    ktDM &db = adapter.getDM();
     BOOST_TEST(db.getNumCells() == 3);
     BOOST_TEST(db.getNumTerminals() == 1);
     BOOST_TEST(db.getNumNets() == 1);
@@ -179,13 +179,13 @@ BOOST_AUTO_TEST_CASE(reads_cell_geometry_and_terminal_flag) {
     BOOST_REQUIRE(adapter.readFromFiles(dir.file("tiny/tiny.nodes").string(),
                                         dir.file("tiny/tiny.nets").string()));
 
-    PlacementDB &db = adapter.getPlacementDB();
+    ktDM &db = adapter.getDM();
     const Graph &g = db.getGraph();
-    const Vertex &c1 = g.getVertex(db.getCellId("c1"));
+    const Vertex &c1 = g.getCell(db.getCellId("c1"));
     BOOST_TEST(c1.width == 3.0);
     BOOST_TEST(c1.height == 2.0);
     BOOST_TEST(!c1.isTerminal);
-    BOOST_TEST(g.getVertex(db.getCellId("pad0")).isTerminal);
+    BOOST_TEST(g.getCell(db.getCellId("pad0")).isTerminal);
 }
 
 BOOST_AUTO_TEST_CASE(placement_file_marks_pads_fixed) {
@@ -199,7 +199,7 @@ BOOST_AUTO_TEST_CASE(placement_file_marks_pads_fixed) {
                                         dir.file("tiny/tiny.nets").string(),
                                         dir.file("tiny/tiny.pl").string()));
 
-    PlacementDB &db = adapter.getPlacementDB();
+    ktDM &db = adapter.getDM();
     // The pad is anchored, the standard cell is free to move.
     BOOST_TEST(db.isCellFixed("pad0"));
     BOOST_TEST(!db.isCellFixed("c0"));
@@ -214,7 +214,7 @@ BOOST_AUTO_TEST_CASE(terminals_are_fixed_even_without_a_pl_file) {
     BOOST_REQUIRE(adapter.readFromFiles(dir.file("tiny/tiny.nodes").string(),
                                         dir.file("tiny/tiny.nets").string()));
 
-    PlacementDB &db = adapter.getPlacementDB();
+    ktDM &db = adapter.getDM();
     // "terminal" in .nodes alone makes a pad immovable.
     BOOST_TEST(db.isCellFixed("pad0"));
     BOOST_TEST(!db.isCellFixed("c0"));
@@ -231,7 +231,7 @@ BOOST_AUTO_TEST_CASE(reads_row_structure) {
                                         dir.file("tiny/tiny.nets").string(), "",
                                         dir.file("tiny/tiny.scl").string()));
 
-    BOOST_TEST(adapter.getPlacementDB().getNumRows() == 1);
+    BOOST_TEST(adapter.getDM().getNumRows() == 1);
 }
 
 BOOST_AUTO_TEST_CASE(fails_cleanly_on_a_missing_directory) {
@@ -252,7 +252,7 @@ BOOST_AUTO_TEST_CASE(reads_macros_cells_pads_and_nets) {
     LefDefInputAdapter adapter;
     BOOST_REQUIRE(adapter.readFromDirectory(dir.str()));
 
-    PlacementDB &db = adapter.getPlacementDB();
+    ktDM &db = adapter.getDM();
     // Two components plus the pad.
     BOOST_TEST(db.getNumCells() == 3);
     BOOST_TEST(db.getNumTerminals() == 1);
@@ -270,14 +270,14 @@ BOOST_AUTO_TEST_CASE(scales_lef_microns_by_the_def_units) {
     LefDefInputAdapter adapter;
     BOOST_REQUIRE(adapter.readFromDirectory(dir.str()));
 
-    PlacementDB &db = adapter.getPlacementDB();
+    ktDM &db = adapter.getDM();
     const Graph &g = db.getGraph();
     // SIZE 10.000 BY 20.000 microns at 1000 units per micron.
-    const Vertex &macro = g.getVertex(db.getCellId("m1"));
+    const Vertex &macro = g.getCell(db.getCellId("m1"));
     BOOST_TEST(macro.width == 10000.0);
     BOOST_TEST(macro.height == 20000.0);
     // SIZE 0.200 BY 0.900 microns.
-    const Vertex &std = g.getVertex(db.getCellId("u1"));
+    const Vertex &std = g.getCell(db.getCellId("u1"));
     BOOST_TEST(std.width == 200.0);
     BOOST_TEST(std.height == 900.0);
 }
@@ -291,7 +291,7 @@ BOOST_AUTO_TEST_CASE(keeps_macro_and_placed_component_coordinates) {
     LefDefInputAdapter adapter;
     BOOST_REQUIRE(adapter.readFromDirectory(dir.str()));
 
-    PlacementDB &db = adapter.getPlacementDB();
+    ktDM &db = adapter.getDM();
     // "+ FIXED ( 5000 5000 )" is the component origin, not its centre.
     const auto [mx, my] = db.getCellPosition("m1");
     BOOST_TEST(mx == 5000.0);
@@ -313,7 +313,7 @@ BOOST_AUTO_TEST_CASE(reads_die_area_and_rows) {
     LefDefInputAdapter adapter;
     BOOST_REQUIRE(adapter.readFromDirectory(dir.str()));
 
-    PlacementDB &db = adapter.getPlacementDB();
+    ktDM &db = adapter.getDM();
     const auto [lo, hi] = db.getDieArea();
     BOOST_TEST(lo.first == 0.0);
     BOOST_TEST(lo.second == 0.0);
@@ -338,7 +338,7 @@ END DESIGN
     LefDefInputAdapter adapter;
     BOOST_REQUIRE(adapter.readFromDirectory(dir.str()));
     // "/" is not usable as a graph key, so it becomes "_".
-    BOOST_TEST(adapter.getPlacementDB().hasCell("u_1"));
+    BOOST_TEST(adapter.getDM().hasCell("u_1"));
 }
 
 BOOST_AUTO_TEST_CASE(fails_cleanly_without_a_def_file) {

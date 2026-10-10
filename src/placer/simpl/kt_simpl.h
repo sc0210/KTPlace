@@ -72,10 +72,18 @@ struct SimplParams {
     /// in two passes on adaptec1, so the machinery converges -- the loop just
     /// never gave it the rounds. Passes stop early once the overflow stops
     /// improving.
-    std::size_t lalPasses = 4;
+    std::size_t lalPasses = 1;
     /// Stop the internal passes once the overflow improves by less than this
     /// relative amount.
     double lalMinGain = 0.01;
+    /// Relative band within which two upper bounds count as equally legalized,
+    /// so the shorter one wins. Ranking the run's upper bounds by wirelength
+    /// alone selects the least legalized iteration in it, because the more
+    /// collapsed a placement is the shorter its wires and the more it overlaps;
+    /// this is how wide "more legalized" has to be before wirelength decides.
+    /// 0 makes overflow the only key, which on adaptec1 costs ~20% wirelength
+    /// chasing overflow differences that do not survive legalization.
+    double upperOvfTol = 0.05;
     /// Recursion cut-off from Algorithm 1 line 8: blocks at this depth stop
     /// being split.
     std::size_t maxLevel = 10;
@@ -208,9 +216,26 @@ struct SimplParams {
     enum class StripeScale {
         Tight,  ///< scale only when over capacity; never spreads a sparse stripe
         Both,   ///< sqrt(room/assigned) either way
-        None,   ///< assign and clamp only; no scaling (default, and the best)
+        None,   ///< assign and clamp only; no scaling
+        Fill,   ///< sort by position, then greedily pack with minimal movement
     };
-    StripeScale stripeScaleMode = StripeScale::None;
+
+    /// How the cells assigned to a stripe are placed inside it, which is the
+    /// last step of Algorithm 1's "nonlinear scaling" and the only place the
+    /// nonlinearity comes from: different stripes get different factors, so the
+    /// method is not a uniform scaling of the whole region.
+    ///
+    /// Both is the default, and it is what the paper describes -- "cell locations
+    /// within each stripe are linearly scaled from current locations". None, which
+    /// disables the step entirely, was the default until now because it gave the
+    /// shortest wirelength, and that comparison was confounded: the upper bound
+    /// was being chosen by wirelength alone, which selects the *least* legalized
+    /// iteration in the run (the more collapsed a placement is, the shorter its
+    /// wires), so "None wins" was measuring a selection artefact. With the
+    /// selection fixed, Both beats None on wirelength on ibm01 by 18% and on
+    /// legality on both designs -- overflow 0.224 against 0.276 on ibm01, 0.169
+    /// against 0.206 on adaptec1 -- and costs 4% of wirelength on adaptec1.
+    StripeScale stripeScaleMode = StripeScale::Both;
 
     NetModel initNetModel = NetModel::Star;
     NetModel lssNetModel = NetModel::B2B;
@@ -258,8 +283,8 @@ struct SimplParams {
     /// the criterion mean something.
     ///
     /// Defaults are fractions of the upper bound's HPWL.
-    double gapRelaxedFrac = 0.25;       ///< bounds within 25% and upper bound stale
-    double gapTightFrac = 0.10;         ///< bounds within 10%: converged, no patience
+    double gapRelaxedFrac = 0.25;       ///< (1) gap within 25% of the reference, and stale
+    double gapTightFrac = 0.10;         ///< (2) gap below 10% of the reference: converged
     std::size_t gapReferenceIter = 10;  ///< oscillation window; first test at it+1
     /// Upper-bound non-improving iterations tolerated once the gap test is met --
     /// the paper's "stops improving", which is what the oscillation note warns about.
@@ -397,7 +422,7 @@ void reportSimpl(const SimplResult &res);
 
 class SimplePlacer {
 public:
-    explicit SimplePlacer(PlacementDB &db);
+    explicit SimplePlacer(ktDM &db);
     ~SimplePlacer();
 
     SimplePlacer(const SimplePlacer &) = delete;

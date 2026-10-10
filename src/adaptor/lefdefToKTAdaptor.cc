@@ -86,8 +86,8 @@ std::string LefDefInputAdapter::sanitizeName(const std::string &name) {
     return out;
 }
 
-LefDefInputAdapter::LefDefInputAdapter(std::unique_ptr<PlacementDB> database)
-    : db(database ? std::move(database) : std::make_unique<PlacementDB>()) {}
+LefDefInputAdapter::LefDefInputAdapter(std::unique_ptr<ktDM> database)
+    : db(database ? std::move(database) : std::make_unique<ktDM>()) {}
 
 LefDefInputAdapter::~LefDefInputAdapter() = default;
 
@@ -107,11 +107,11 @@ bool LefDefInputAdapter::recognises(const std::string &dirPath) const {
     return false;
 }
 
-std::unique_ptr<PlacementDB> LefDefInputAdapter::read(const std::string &dirPath) {
+std::unique_ptr<ktDM> LefDefInputAdapter::read(const std::string &dirPath) {
     if (!readFromDirectory(dirPath)) {
         return nullptr;
     }
-    std::unique_ptr<PlacementDB> database = releasePlacementDB();
+    std::unique_ptr<ktDM> database = releaseDM();
     // The fences go into the database, so the adapter does not have to outlive the
     // placement it constrains.
     database->setConstraints(std::move(fences));

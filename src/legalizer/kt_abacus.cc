@@ -144,7 +144,7 @@ struct RowTrack {
 
 class AbacusLegalizer::Impl {
 public:
-    explicit Impl(PlacementDB &db) : db_(db), graph_(db.getGraph()) {}
+    explicit Impl(ktDM &db) : db_(db), graph_(db.getGraph()) {}
 
     LegalizeResult run(const LegalizeParams &params);
 
@@ -167,7 +167,7 @@ private:
 
     static constexpr std::size_t kNoRow = std::numeric_limits<std::size_t>::max();
 
-    PlacementDB &db_;
+    ktDM &db_;
     Graph &graph_;
     std::vector<RowTrack> rows_;
     std::vector<std::size_t> mov_;  ///< graph vertex id per movable slot
@@ -183,7 +183,7 @@ private:
 
 void AbacusLegalizer::Impl::buildRows() {
     rows_.clear();
-    for (const PlacementDB::RowInfo &ri : db_.getRows()) {
+    for (const RowInfo &ri : db_.getRows()) {
         RowTrack r;
         r.y = ri.coordinate;
         r.height = ri.height;
@@ -194,7 +194,7 @@ void AbacusLegalizer::Impl::buildRows() {
         // Each .scl subrow becomes a Subrow, trimmed by any fixed cell that
         // crosses the row's band, so a macro crossing a subrow shortens it
         // instead of being ignored.
-        for (const PlacementDB::SubrowInfo &si : ri.subrows) {
+        for (const SubrowInfo &si : ri.subrows) {
             if (!(si.xhi(r.siteWidth) > si.xlo())) {
                 continue;
             }
@@ -434,24 +434,24 @@ void AbacusLegalizer::Impl::rollback(Subrow &sr, RowUndo undo) {
 double AbacusLegalizer::Impl::hpwlOf(const std::vector<double> &x,
                                      const std::vector<double> &y) const {
     double total = 0.0;
-    for (std::size_t v = 0; v < graph_.getNumVertices(); ++v) {
-        const Vertex &vert = graph_.getVertex(v);
-        if (vert.type != VertexType::Net || vert.inEdges.empty()) {
+    for (std::size_t n = 0; n < graph_.getNumNets(); ++n) {
+        const std::vector<std::size_t> &pins = graph_.getNetPins(n);
+        if (pins.empty()) {
             continue;
         }
         double ax = std::numeric_limits<double>::max(), bx = -std::numeric_limits<double>::max();
         double ay = std::numeric_limits<double>::max(), by = -std::numeric_limits<double>::max();
-        for (const std::size_t eid : vert.inEdges) {
-            const Edge &e = graph_.getEdge(eid);
-            const auto it = slotOf_.find(e.source);
+        for (const std::size_t pinId : pins) {
+            const Pin &pin = graph_.getPin(pinId);
+            const auto it = slotOf_.find(pin.cellId);
             double cx = 0.0, cy = 0.0;
             if (it != slotOf_.end()) {
-                cx = x[it->second] + e.offsetX;
-                cy = y[it->second] + e.offsetY;
+                cx = x[it->second] + pin.offsetX;
+                cy = y[it->second] + pin.offsetY;
             } else {
-                const Vertex &c = graph_.getVertex(e.source);
-                cx = c.x + e.offsetX;
-                cy = c.y + e.offsetY;
+                const Vertex &c = graph_.getCell(pin.cellId);
+                cx = c.x + pin.offsetX;
+                cy = c.y + pin.offsetY;
             }
             ax = std::min(ax, cx);
             bx = std::max(bx, cx);
@@ -465,10 +465,10 @@ double AbacusLegalizer::Impl::hpwlOf(const std::vector<double> &x,
 
 void AbacusLegalizer::Impl::writeFrame(const std::string &path, const std::string &note,
                                        std::size_t step, std::size_t total) const {
-    const std::size_t nv = graph_.getNumVertices();
+    const std::size_t nv = graph_.getNumCells();
     std::vector<float> fx(nv), fy(nv);
     for (std::size_t v = 0; v < nv; ++v) {
-        const Vertex &vert = graph_.getVertex(v);
+        const Vertex &vert = graph_.getCell(v);
         fx[v] = static_cast<float>(vert.x);
         fy[v] = static_cast<float>(vert.y);
     }
@@ -582,9 +582,9 @@ LegalizeResult AbacusLegalizer::Impl::run(const LegalizeParams &params) {
     ScopedTimer timer("legalize");
     constraints_ = &db_.constraints();
 
-    for (std::size_t v = 0; v < graph_.getNumVertices(); ++v) {
-        const Vertex &vert = graph_.getVertex(v);
-        if (vert.type != VertexType::Cell || vert.isFixed || vert.isTerminal) {
+    for (std::size_t v = 0; v < graph_.getNumCells(); ++v) {
+        const Vertex &vert = graph_.getCell(v);
+        if (vert.isFixed || vert.isTerminal) {
             continue;
         }
         const std::size_t slot = mov_.size();
@@ -603,9 +603,9 @@ LegalizeResult AbacusLegalizer::Impl::run(const LegalizeParams &params) {
     }
     res.hpwlBefore = hpwlOf(xs_, ys_);
 
-    for (std::size_t v = 0; v < graph_.getNumVertices(); ++v) {
-        const Vertex &vert = graph_.getVertex(v);
-        if (vert.type != VertexType::Cell || !vert.isFixed) {
+    for (std::size_t v = 0; v < graph_.getNumCells(); ++v) {
+        const Vertex &vert = graph_.getCell(v);
+        if (!vert.isFixed) {
             continue;
         }
         fixed_.push_back(FixedBox{vert.y, vert.y + vert.height, vert.x, vert.x + vert.width});
@@ -814,7 +814,7 @@ LegalizeResult AbacusLegalizer::Impl::run(const LegalizeParams &params) {
 
 // ---------------------------------------------------------------------------
 
-AbacusLegalizer::AbacusLegalizer(PlacementDB &db) : pImpl(std::make_unique<Impl>(db)) {}
+AbacusLegalizer::AbacusLegalizer(ktDM &db) : pImpl(std::make_unique<Impl>(db)) {}
 
 AbacusLegalizer::~AbacusLegalizer() = default;
 

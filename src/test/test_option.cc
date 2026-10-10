@@ -184,11 +184,16 @@ BOOST_AUTO_TEST_CASE(algorithm_and_format_have_defaults) {
 }
 
 BOOST_AUTO_TEST_CASE(every_flag_is_accepted_in_both_its_short_and_long_form) {
+    // The work directory is created as it is parsed, so it goes in a scratch
+    // directory: a bare relative name left an empty folder behind in whatever
+    // directory the test ran from (src/ under `make test`, or the repository root).
+    const ScratchDir dir("forms");
+    const std::string work = dir.file("work").string();
     const struct {
         const char *shortForm;
         const char *longForm;
         const char *value;
-    } forms[] = {{"-a", "--algorithm", "ntuplace1"}, {"-w", "--work-dir", "somewhere"}};
+    } forms[] = {{"-a", "--algorithm", "ntuplace1"}, {"-w", "--work-dir", work.c_str()}};
 
     for (const auto &f : forms) {
         BOOST_TEST_CONTEXT(f.shortForm) {

@@ -12,7 +12,7 @@ override INCLUDES := -I..
 OBJ_DIR ?= ../build/obj/datamodel
 
 # Source files in this directory
-SRCS := kt_dm.cc kt_graph.cc
+SRCS := kt_die.cc kt_dm.cc kt_graph.cc kt_solutionMgr.cc
 
 # Only include files that exist
 EXISTING_SRCS := $(foreach src,$(SRCS),$(if $(wildcard $(src)),$(src),))

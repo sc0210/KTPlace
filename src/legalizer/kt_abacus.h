@@ -53,7 +53,7 @@ struct LegalizeResult {
 
 class AbacusLegalizer {
 public:
-    explicit AbacusLegalizer(PlacementDB &db);
+    explicit AbacusLegalizer(ktDM &db);
     ~AbacusLegalizer();
 
     AbacusLegalizer(const AbacusLegalizer &) = delete;

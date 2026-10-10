@@ -1,154 +1,162 @@
-// @file kt_graph.cc// Implementation of Graph
-
+// @file kt_graph.cc
 
 #include "datamodel/kt_graph.h"
 
-#include <algorithm>
-#include <cstdio>
 #include <stdexcept>
 
 namespace ktplace {
 
+const std::vector<std::size_t> Graph::kNoPins;
+
 Graph::Graph() = default;
 Graph::~Graph() = default;
 
-std::size_t Graph::addVertex(VertexType type, const std::string &name) {
-    if (nameToVertexId.find(name) != nameToVertexId.end()) {
-        throw std::runtime_error("Vertex " + name + " already exists");
+std::size_t Graph::addCell(const std::string &name) {
+    if (cellByName.find(name) != cellByName.end()) {
+        throw std::runtime_error("Cell " + name + " already exists");
     }
-
-    Vertex v;
-    v.id = nextVertexId++;
-    v.name = name;
-    v.type = type;
-
-    std::size_t id = v.id;
-    vertices.push_back(v);
-    nameToVertexId[name] = id;
-
-    return id;
+    Vertex cell;
+    cell.id = cells.size();
+    cell.name = name;
+    cells.push_back(std::move(cell));
+    cellPinIds.emplace_back();
+    cellByName[name] = cells.size() - 1;
+    return cells.size() - 1;
 }
 
-bool Graph::hasVertex(const std::string &name) const {
-    return nameToVertexId.find(name) != nameToVertexId.end();
+bool Graph::hasCell(const std::string &name) const {
+    return cellByName.find(name) != cellByName.end();
 }
 
-std::size_t Graph::getVertexId(const std::string &name) const {
-    auto it = nameToVertexId.find(name);
-    if (it == nameToVertexId.end()) {
+std::size_t Graph::getCellId(const std::string &name) const {
+    const auto it = cellByName.find(name);
+    if (it == cellByName.end()) {
         throw std::runtime_error("Vertex " + name + " not found");
     }
     return it->second;
 }
 
-Vertex &Graph::getVertex(std::size_t id) {
-    if (id >= vertices.size() || vertices[id].id != id) {
+const std::vector<Vertex> &Graph::getCells() const {
+    return cells;
+}
+
+Vertex &Graph::getCell(std::size_t id) {
+    if (id >= cells.size() || cells[id].id != id) {
         throw std::runtime_error("Invalid vertex ID");
     }
-    return vertices[id];
+    return cells[id];
 }
 
-const Vertex &Graph::getVertex(std::size_t id) const {
-    if (id >= vertices.size() || vertices[id].id != id) {
+const Vertex &Graph::getCell(std::size_t id) const {
+    if (id >= cells.size() || cells[id].id != id) {
         throw std::runtime_error("Invalid vertex ID");
     }
-    return vertices[id];
+    return cells[id];
 }
 
-VertexType Graph::getVertexType(std::size_t id) const {
-    return getVertex(id).type;
+std::size_t Graph::getNumCells() const {
+    return cells.size();
 }
 
-std::size_t Graph::getNumVertices() const {
-    return vertices.size();
-}
-
-std::size_t Graph::getNumVertices(VertexType type) const {
-    return std::count_if(vertices.begin(), vertices.end(), [type](const Vertex &v) {
-        return v.type == type;
-    });
-}
-
-std::size_t Graph::addEdge(std::size_t source, std::size_t target, PinDirection direction) {
-    // Validate vertices exist
-    if (source >= vertices.size() || target >= vertices.size()) {
-        throw std::runtime_error("Invalid vertex ID for edge");
+std::size_t Graph::addNet(const std::string &name, double weight) {
+    if (netByName.find(name) != netByName.end()) {
+        throw std::runtime_error("Net " + name + " already exists");
     }
+    Net net;
+    net.id = nets.size();
+    net.name = name;
+    net.weight = weight;
+    nets.push_back(std::move(net));
+    netPinIds.emplace_back();
+    netByName[name] = nets.size() - 1;
+    return nets.size() - 1;
+}
 
-    // Validate bipartite structure: source must be Cell, target must be Net
-    if (vertices[source].type != VertexType::Cell || vertices[target].type != VertexType::Net) {
-        throw std::runtime_error("Edge must connect Cell (source) to Net (target)");
+bool Graph::hasNet(const std::string &name) const {
+    return netByName.find(name) != netByName.end();
+}
+
+std::size_t Graph::getNetId(const std::string &name) const {
+    const auto it = netByName.find(name);
+    if (it == netByName.end()) {
+        throw std::runtime_error("Net " + name + " not found");
     }
-
-    Edge e;
-    e.id = nextEdgeId++;
-    e.source = source;
-    e.target = target;
-    e.direction = direction;
-
-    std::size_t id = e.id;
-    edges.push_back(e);
-
-    // Update vertex edge lists
-    vertices[source].outEdges.push_back(id);
-    vertices[target].inEdges.push_back(id);
-
-    return id;
+    return it->second;
 }
 
-std::size_t Graph::addEdge(const std::string &sourceName, const std::string &targetName,
-                           PinDirection direction) {
-    std::size_t source = getVertexId(sourceName);
-    std::size_t target = getVertexId(targetName);
-    return addEdge(source, target, direction);
+const std::vector<Net> &Graph::getNets() const {
+    return nets;
 }
 
-Edge &Graph::getEdge(std::size_t id) {
-    if (id >= edges.size()) {
-        throw std::runtime_error("Invalid edge ID");
+const Net &Graph::getNet(std::size_t id) const {
+    if (id >= nets.size() || nets[id].id != id) {
+        throw std::runtime_error("Invalid net ID");
     }
-    return edges[id];
+    return nets[id];
 }
 
-const Edge &Graph::getEdge(std::size_t id) const {
-    if (id >= edges.size()) {
-        throw std::runtime_error("Invalid edge ID");
+std::size_t Graph::getNumNets() const {
+    return nets.size();
+}
+
+std::size_t Graph::addPin(std::size_t cellId, std::size_t netId, PinRole role, double offsetX,
+                          double offsetY) {
+    if (cellId >= cells.size()) {
+        throw std::runtime_error("Vertex " + std::to_string(cellId) + " not found");
     }
-    return edges[id];
-}
-
-std::size_t Graph::getNumEdges() const {
-    return edges.size();
-}
-
-const std::vector<std::size_t> &Graph::getOutEdges(std::size_t vertexId) const {
-    return getVertex(vertexId).outEdges;
-}
-
-const std::vector<std::size_t> &Graph::getInEdges(std::size_t vertexId) const {
-    return getVertex(vertexId).inEdges;
-}
-
-void Graph::setName(std::size_t vertexId, const std::string &name) {
-    Vertex &v = getVertex(vertexId);
-    if (nameToVertexId.find(name) != nameToVertexId.end() && nameToVertexId.at(name) != vertexId) {
-        throw std::runtime_error("Vertex name " + name + " already exists");
+    if (netId >= nets.size()) {
+        throw std::runtime_error("Net " + std::to_string(netId) + " not found");
     }
-    nameToVertexId.erase(v.name);
-    v.name = name;
-    nameToVertexId[name] = vertexId;
+    Pin pin;
+    pin.id = pins.size();
+    pin.cellId = cellId;
+    pin.netId = netId;
+    pin.role = role;
+    pin.offsetX = offsetX;
+    pin.offsetY = offsetY;
+    pins.push_back(pin);
+    netPinIds[netId].push_back(pins.size() - 1);
+    cellPinIds[cellId].push_back(pins.size() - 1);
+    return pins.size() - 1;
 }
 
-const std::string &Graph::getName(std::size_t vertexId) const {
-    return getVertex(vertexId).name;
+const std::vector<Pin> &Graph::getPins() const {
+    return pins;
+}
+
+const Pin &Graph::getPin(std::size_t id) const {
+    if (id >= pins.size() || pins[id].id != id) {
+        throw std::runtime_error("Invalid pin ID");
+    }
+    return pins[id];
+}
+
+std::size_t Graph::getNumPins() const {
+    return pins.size();
+}
+
+const std::vector<std::size_t> &Graph::getNetPins(std::size_t netId) const {
+    if (netId >= netPinIds.size()) {
+        throw std::runtime_error("Invalid net ID");
+    }
+    return netPinIds[netId];
+}
+
+const std::vector<std::size_t> &Graph::getCellPins(std::size_t cellId) const {
+    if (cellId >= cellPinIds.size()) {
+        throw std::runtime_error("Invalid vertex ID");
+    }
+    return cellPinIds[cellId];
 }
 
 void Graph::clear() {
-    vertices.clear();
-    edges.clear();
-    nameToVertexId.clear();
-    nextVertexId = 0;
-    nextEdgeId = 0;
+    cells.clear();
+    nets.clear();
+    pins.clear();
+    cellByName.clear();
+    netByName.clear();
+    netPinIds.clear();
+    cellPinIds.clear();
 }
 
 }  // namespace ktplace

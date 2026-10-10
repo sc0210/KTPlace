@@ -167,12 +167,9 @@ std::size_t constraintMgr::assignByPrefix(int regionId, const std::string &prefi
         return 0;
     }
     std::size_t assigned = 0;
-    const std::size_t count = graph.getNumVertices();
+    const std::size_t count = graph.getNumCells();
     for (std::size_t v = 0; v < count; ++v) {
-        Vertex &vert = graph.getVertex(v);
-        if (vert.type != VertexType::Cell) {
-            continue;
-        }
+        Vertex &vert = graph.getCell(v);
         if (vert.regionId != kNoRegion) {
             continue;  // first matching group wins
         }

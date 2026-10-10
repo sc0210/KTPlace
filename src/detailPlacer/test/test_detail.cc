@@ -44,22 +44,26 @@ constexpr double kRowHeight = 10.0;
 constexpr double kRowPitch = 10.0;
 
 /// A row of @p numSites sites, y at @p rowIndex * kRowPitch.
-void addRow(PlacementDB &db, int rowIndex, double numSites, double originX = 0.0) {
+void addRow(ktDM &db, int rowIndex, double numSites, double originX = 0.0) {
     const double y = rowIndex * kRowPitch;
     const std::size_t row = db.addRow(y, kRowHeight, kSite, kSite);
-    (void)db.addSubrow(row, originX, numSites);
+    BOOST_TEST(row < db.getNumRows());
+    const std::size_t before = db.getRows()[row].subrows.size();
+    const std::size_t sub = db.addSubrow(row, originX, numSites);
+    // The returned id indexes the row's subrows, not the rows.
+    BOOST_TEST(sub == before);
+    BOOST_TEST(db.getRows()[row].subrows.size() == before + 1);
 }
 
 /// A single movable cell snapped to a site.
 // Places a cell off the site pitch, for the tests that check a pass snaps
 // cells back onto it. Every other test goes through addCell, which rounds.
-void addCellRaw(PlacementDB &db, const std::string &name, double x, int rowIndex,
-                double width = 1.0) {
+void addCellRaw(ktDM &db, const std::string &name, double x, int rowIndex, double width = 1.0) {
     const std::size_t id = db.addCell(name, width, kRowHeight);
     db.setCellPosition(id, x, rowIndex * kRowPitch);
 }
 
-void addCell(PlacementDB &db, const std::string &name, double x, int rowIndex, double width = 1.0) {
+void addCell(ktDM &db, const std::string &name, double x, int rowIndex, double width = 1.0) {
     const std::size_t id = db.addCell(name, width, kRowHeight);
     db.setCellPosition(id, std::round(x / kSite) * kSite, rowIndex * kRowPitch);
     gWidths.resize(db.getNumCells(), 1.0);
@@ -67,8 +71,7 @@ void addCell(PlacementDB &db, const std::string &name, double x, int rowIndex, d
 }
 
 /// A fixed cell, which the optimiser must not move and must not overlap.
-void addFixed(PlacementDB &db, const std::string &name, double x, int rowIndex,
-              double width = 1.0) {
+void addFixed(ktDM &db, const std::string &name, double x, int rowIndex, double width = 1.0) {
     const std::size_t id = db.addCell(name, width, kRowHeight, /*isTerminal=*/true);
     db.setCellPosition(id, x, rowIndex * kRowPitch);
     db.setCellFixed(id, true);
@@ -78,10 +81,22 @@ void addFixed(PlacementDB &db, const std::string &name, double x, int rowIndex,
 
 /// A two-pin net between two cells. Both the net and its pins are created, since
 /// addPin resolves the net by name and throws if it does not exist.
-void addNet(PlacementDB &db, const std::string &net, const std::string &a, const std::string &b) {
-    (void)db.addNet(net);
-    (void)db.addPin(a, net, 0.0, 0.0, true);
-    (void)db.addPin(b, net, 0.0, 0.0, false);
+void addNet(ktDM &db, const std::string &net, const std::string &a, const std::string &b) {
+    // Sequenced through locals: two calls in one comparison are unsequenced, and
+    // gcc evaluates the right-hand one first, so the lookup runs before the net
+    // exists. getNetId reports that as "Vertex <name> not found".
+    const std::size_t netId = db.addNet(net);
+    const std::size_t looked = db.getNetId(net);
+    BOOST_TEST(netId == looked);
+    // addPin throws if either endpoint is unknown, which is the property the
+    // comment above claims; checking the count is what makes it a claim.
+    const std::size_t before = db.getNumPins();
+    const std::size_t pinA = db.addPin(a, net, 0.0, 0.0, true);
+    const std::size_t pinB = db.addPin(b, net, 0.0, 0.0, false);
+    const std::size_t after = db.getNumPins();
+    BOOST_TEST(pinA < after);
+    BOOST_TEST(pinB < after);
+    BOOST_TEST(after == before + 2);
 }
 
 [[nodiscard]] DetailPlaceParams only(std::size_t which) {
@@ -94,7 +109,7 @@ void addNet(PlacementDB &db, const std::string &net, const std::string &a, const
 }
 
 /// Number of movable cells not sitting on a site pitch.
-[[nodiscard]] std::size_t r0_offsite(PlacementDB &db) {
+[[nodiscard]] std::size_t r0_offsite(ktDM &db) {
     const auto rows = db.getRows();
     if (rows.empty()) {
         return 0;
@@ -128,7 +143,7 @@ void addNet(PlacementDB &db, const std::string &net, const std::string &a, const
 /// True when every movable cell still sits on a site, inside its row band, and
 /// clear of every other cell. Checked from the outside so it does not reuse the
 /// placer's own notion of legality.
-[[nodiscard]] bool isLegal(PlacementDB &db) {
+[[nodiscard]] bool isLegal(ktDM &db) {
     const auto rows = db.getRows();
     if (rows.empty()) {
         // No rows means nothing can be legal; a design with cells and no rows is
@@ -190,7 +205,7 @@ void addNet(PlacementDB &db, const std::string &net, const std::string &a, const
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(a_design_with_nothing_to_do_is_left_alone) {
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 20);
     addCell(db, "a", 0.0, 0);
     addCell(db, "b", 1.0, 0);
@@ -204,7 +219,7 @@ BOOST_AUTO_TEST_CASE(a_design_with_nothing_to_do_is_left_alone) {
 }
 
 BOOST_AUTO_TEST_CASE(an_empty_database_does_not_crash) {
-    PlacementDB db;
+    ktDM db;
     FastDetailedPlacer dp(db);
     DetailPlaceResult r;
     BOOST_CHECK_NO_THROW(r = dp.place());
@@ -214,7 +229,7 @@ BOOST_AUTO_TEST_CASE(an_empty_database_does_not_crash) {
 }
 
 BOOST_AUTO_TEST_CASE(a_database_with_rows_but_no_cells_does_not_crash) {
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 10);
     addRow(db, 1, 10);
     FastDetailedPlacer dp(db);
@@ -222,7 +237,7 @@ BOOST_AUTO_TEST_CASE(a_database_with_rows_but_no_cells_does_not_crash) {
 }
 
 BOOST_AUTO_TEST_CASE(placing_a_legal_design_keeps_it_legal) {
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 40);
     addRow(db, 1, 40);
     addRow(db, 2, 40);
@@ -246,7 +261,7 @@ BOOST_AUTO_TEST_CASE(an_illegal_input_is_reported_rather_than_silently_called_le
     // clean bill of health. The stage is the caller, not this code, that has to
     // know the input was bad. An overlap the passes can resolve is repaired and
     // the run reports itself legal afterwards.
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 20);
     addCell(db, "a", 5.0, 0);
     addCell(db, "b", 5.0, 0);  // exactly on top of a
@@ -261,7 +276,7 @@ BOOST_AUTO_TEST_CASE(an_unrepairable_overlap_is_still_reported) {
     // Two cells too wide to both fit the subrow, so no pass can separate them.
     // A repair that cannot work must leave the overlap visible rather than
     // reporting a clean run.
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 4);
     addCellRaw(db, "a", 1.0, 0, 3.0);
     addCellRaw(db, "b", 1.0, 0, 3.0);
@@ -273,7 +288,7 @@ BOOST_AUTO_TEST_CASE(an_unrepairable_overlap_is_still_reported) {
 BOOST_AUTO_TEST_CASE(hpwl_never_gets_worse_over_the_whole_run) {
     // Each technique is individually monotone, so the combined run has to be
     // too. A regression here means some pass is applying a losing move.
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 60);
     addRow(db, 1, 60);
     addRow(db, 2, 60);
@@ -301,7 +316,7 @@ BOOST_AUTO_TEST_CASE(an_already_optimal_placement_is_not_reshuffled) {
     // Cells packed left to right with their nets adjacent is already minimal,
     // so a correct placer has nothing to do. A nonzero move count here means
     // the optimiser is wandering.
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 40);
     for (int c = 0; c < 8; ++c) {
         addCell(db, "c" + std::to_string(c), static_cast<double>(c), 0);
@@ -322,7 +337,7 @@ BOOST_AUTO_TEST_CASE(an_already_optimal_placement_is_not_reshuffled) {
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(global_swap_alone_stays_legal) {
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 60);
     addRow(db, 1, 60);
     for (int r = 0; r < 2; ++r) {
@@ -347,7 +362,7 @@ BOOST_AUTO_TEST_CASE(global_swap_alone_stays_legal) {
 }
 
 BOOST_AUTO_TEST_CASE(global_swap_never_moves_a_cell_onto_a_fixed_one) {
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 40);
     addFixed(db, "macro", 10.0, 0, /*width=*/4.0);
     for (int c = 0; c < 6; ++c) {
@@ -375,7 +390,7 @@ BOOST_AUTO_TEST_CASE(vertical_swap_pulls_a_cell_back_to_its_own_row) {
     // A cell in row 1 whose nets all reach back to row 0, and a row-0 cell
     // sitting to the right of the cell's own net. Vertical swap is the only
     // technique that can change rows, so the other three are off.
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 40);
     addRow(db, 1, 40);
     addCell(db, "a", 2.0, 0);
@@ -398,7 +413,7 @@ BOOST_AUTO_TEST_CASE(local_reordering_reduces_a_backwards_ordering) {
     // Three cells whose nets want "p" between the other two, but which are
     // stored r,p,q. The left-to-right order is wrong, which is exactly what the
     // reordering dynamic program is there to fix, so the other three are off.
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 40);
     addCell(db, "r", 2.0, 0);
     addCell(db, "p", 5.0, 0);
@@ -425,7 +440,7 @@ BOOST_AUTO_TEST_CASE(local_reordering_never_moves_a_cell_onto_a_fixed_one) {
     // The macro's right edge is deliberately off the site grid: that is what
     // makes rounding a cell left put it inside the macro, and a macro edge is not
     // guaranteed to be site aligned in a real LEF.
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 40);
     addFixed(db, "macro", 8.0, 0, /*width=*/6.4);
     // Legal as it stands, 14.6 clears the macro's 14.4 right edge. Packing the
@@ -458,7 +473,7 @@ BOOST_AUTO_TEST_CASE(local_reordering_never_moves_a_cell_onto_a_fixed_one) {
 BOOST_AUTO_TEST_CASE(local_reordering_keeps_cells_on_their_sites) {
     // The subset dynamic program chooses an order, not a position, so every
     // cell has to land back on a site pitch even though it may have moved.
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 40);
     for (int c = 0; c < 6; ++c) {
         addCell(db, "c" + std::to_string(c), 2.0 + c * 3.0, 0);
@@ -477,7 +492,7 @@ BOOST_AUTO_TEST_CASE(local_reordering_keeps_cells_on_their_sites) {
 BOOST_AUTO_TEST_CASE(single_segment_clustering_tightens_a_gap) {
     // Cells sitting off the site pitch. Clustering is the technique that snaps
     // them back onto sites, so the other three are off.
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 40);
     for (int c = 0; c < 3; ++c) {
         addCellRaw(db, "c" + std::to_string(c), 2.0 + c * 2.0 + 0.4, 0);
@@ -501,7 +516,7 @@ BOOST_AUTO_TEST_CASE(single_segment_clustering_resolves_an_overlap) {
     // Two cells sharing a site. Resolving the overlap is the clustering pass's
     // job even though it lengthens the net between them, so the pass cannot be
     // gated on a wirelength improvement.
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 40);
     addCellRaw(db, "c0", 2.0, 0, 2.0);
     addCellRaw(db, "c1", 2.5, 0, 2.0);
@@ -515,7 +530,7 @@ BOOST_AUTO_TEST_CASE(single_segment_clustering_resolves_an_overlap) {
 }
 
 BOOST_AUTO_TEST_CASE(the_move_counts_add_up_to_the_reported_totals) {
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 60);
     addRow(db, 1, 60);
     for (int r = 0; r < 2; ++r) {
@@ -556,7 +571,7 @@ BOOST_AUTO_TEST_CASE(a_local_reorder_window_of_zero_does_not_hang) {
     // The window is capped by a 2^k subset DP, so a caller that sets it to
     // zero or one must get a cheap run, not an empty loop over a zero-length
     // window or an unbounded one.
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 40);
     for (int c = 0; c < 8; ++c) {
         addCell(db, "c" + std::to_string(c), static_cast<double>(c) * 2.0, 0);
@@ -577,7 +592,7 @@ BOOST_AUTO_TEST_CASE(a_local_reorder_window_of_zero_does_not_hang) {
 BOOST_AUTO_TEST_CASE(an_oversized_local_reorder_window_is_capped_not_obeyed) {
     // A window of 20 would be 2^20 subsets. The cost has to be bounded, or a
     // parameter tweak turns into an overnight run.
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 60);
     for (int c = 0; c < 10; ++c) {
         addCell(db, "c" + std::to_string(c), static_cast<double>(c * 2), 0);
@@ -598,7 +613,7 @@ BOOST_AUTO_TEST_CASE(an_oversized_local_reorder_window_is_capped_not_obeyed) {
 }
 
 BOOST_AUTO_TEST_CASE(a_single_cell_placement_is_legal_and_untouched) {
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 10);
     addCell(db, "only", 3.0, 0);
     FastDetailedPlacer dp(db);
@@ -614,14 +629,18 @@ BOOST_AUTO_TEST_CASE(a_single_cell_placement_is_legal_and_untouched) {
 BOOST_AUTO_TEST_CASE(a_cell_with_no_nets_stays_where_it_is) {
     // With nothing pulling it, moving the cell is pure risk, and the HPWL is
     // identical either way, so a correct optimiser leaves it.
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 40);
     addCell(db, "lonely", 7.0, 0);
     addCell(db, "n1", 1.0, 0);
     addCell(db, "n2", 2.0, 0);
     FastDetailedPlacer dp(db);
-    (void)dp.place();
+    const DetailPlaceResult r = dp.place();
     BOOST_TEST(isLegal(db));
+    // The report has to agree with the placement, not just be produced: a detail
+    // placer that reported zero overlaps while the cells overlapped would still
+    // satisfy the check above.
+    BOOST_TEST(r.overlappingPairs == 0);
     const auto [x, y] = db.getCellPosition("lonely");
     BOOST_TEST(x == 7.0);
     BOOST_TEST(y == 0.0);
@@ -630,7 +649,7 @@ BOOST_AUTO_TEST_CASE(a_cell_with_no_nets_stays_where_it_is) {
 BOOST_AUTO_TEST_CASE(cells_at_the_ends_of_a_row_are_not_pushed_off_it) {
     // The first and last site have no neighbour to swap with. Treating the row
     // as infinite would let a cell end up at a negative x, off the die.
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 6);
     addCell(db, "a", 0.0, 0);
     addCell(db, "b", 5.0, 0);
@@ -649,10 +668,12 @@ BOOST_AUTO_TEST_CASE(cells_at_the_ends_of_a_row_are_not_pushed_off_it) {
 BOOST_AUTO_TEST_CASE(a_row_split_by_a_subrow_gap_is_respected) {
     // A row with two subrows is not one span of x, so placing into it means
     // choosing a subrow. The gap between them has no sites.
-    PlacementDB db;
+    ktDM db;
     const std::size_t row = db.addRow(0.0, kRowHeight, kSite, kSite);
-    (void)db.addSubrow(row, 0.0, 5.0);
-    (void)db.addSubrow(row, 20.0, 5.0);
+    BOOST_TEST(row < db.getNumRows());
+    BOOST_TEST(db.addSubrow(row, 0.0, 5.0) == 0u);
+    BOOST_TEST(db.addSubrow(row, 20.0, 5.0) == 1u);
+    BOOST_TEST(db.getRows()[row].subrows.size() == 2u);
     addCell(db, "a", 1.0, 0);
     addCell(db, "b", 21.0, 0);
     FastDetailedPlacer dp(db);
@@ -674,7 +695,7 @@ BOOST_AUTO_TEST_CASE(fences_are_accepted_without_being_enforced) {
     // The parameter is documented as "drawn, not enforced". It has to be
     // accepted and it must not change the legality verdict, because the
     // optimizer does not police regions -- the legalizer does.
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 40);
     addCell(db, "a", 1.0, 0);
     addCell(db, "b", 2.0, 0);
@@ -694,7 +715,7 @@ BOOST_AUTO_TEST_CASE(fences_are_accepted_without_being_enforced) {
 BOOST_AUTO_TEST_CASE(an_unwritable_plot_directory_does_not_lose_the_placement) {
     // The frames are a diagnostic. If the directory cannot be written, the run
     // still has to improve the placement and still has to be legal.
-    PlacementDB db;
+    ktDM db;
     addRow(db, 0, 40);
     for (int c = 0; c < 6; ++c) {
         addCell(db, "c" + std::to_string(c), 1.0 + c * 3.0, 0);
@@ -716,6 +737,69 @@ BOOST_AUTO_TEST_CASE(the_placer_is_not_copyable) {
     static_assert(!std::is_copy_constructible_v<FastDetailedPlacer>);
     static_assert(!std::is_copy_assignable_v<FastDetailedPlacer>);
     BOOST_TEST(true);
+}
+
+BOOST_AUTO_TEST_CASE(failed_vertical_swap_restores_the_row_the_cell_is_in) {
+    // A cell that has already swapped rows in this pass, then tries a second swap
+    // that fails only at its landing y, must stay in the row it swapped into.
+    // The trial used to restore y from the row the cell started the pass in, so
+    // its geometry went back to the old row while the spans held it in the new
+    // one -- an overlap no per-span check could see.
+    //
+    // The second trial can only fail at its landing y if the blockage does not
+    // also cut the span. One that reaches the end of a row is such a blockage:
+    // the span builder skips an obstacle that runs to the end of the free run,
+    // and leaves it to the per-y blockage test. A movable cell taller than a row
+    // is left in place as such a blockage.
+    ktDM db;
+    for (int r = 0; r < 4; ++r) {
+        addRow(db, r, 100);
+    }
+    // Zero-size pads on row boundaries: they pull on nets without blocking.
+    const auto pad = [&](const std::string &name, double x, double y) {
+        const std::size_t id = db.addCell(name, 0.0, 0.0, /*isTerminal=*/true);
+        db.setCellPosition(id, x, y);
+        db.setCellFixed(id, true);
+    };
+    addCell(db, "c", 50.0, 1, 3.0);  // processed first: the cell under test
+    addCell(db, "d1", 96.0, 0);      // first partner, in the row below
+    addCell(db, "d2", 95.0, 2);      // second partner, in the row above
+    addCell(db, "e", 98.0, 1);       // sits where c lands if y is restored wrongly
+    // Two rows tall, at the right end of rows 2-3 (x 97..100). c (3 wide) at
+    // x 95 in row 2 hits it; d2 (1 wide) at x 96 in row 1 does not.
+    const std::size_t tall = db.addCell("tall", 3.0, 2.0 * kRowHeight);
+    db.setCellPosition(tall, 97.0, 2.0 * kRowPitch);
+    pad("p1", 97.0, 0.0);   // c wants row 0 near x 97
+    pad("p2", 51.0, 10.0);  // d1 wants row 1 near x 51
+    pad("p3", 96.0, 10.0);  // d2 wants row 1 near x 96, strongly
+    addNet(db, "nc", "c", "p1");
+    addNet(db, "nd1", "d1", "p2");
+    for (int k = 0; k < 4; ++k) {
+        addNet(db, "nd2_" + std::to_string(k), "d2", "p3");
+    }
+
+    FastDetailedPlacer dp(db);
+    const DetailPlaceResult r = dp.place(only(1));
+    BOOST_TEST(r.verticalSwaps >= 1u);
+
+    // c swapped into row 0 and its failed second trial must leave it there.
+    const auto [cx, cy] = db.getCellPosition("c");
+    BOOST_TEST(cy == 0.0, "c at y=" << cy << ", expected row 0");
+    // No two single-row movable cells overlap, checked over the cell arrays
+    // rather than per span.
+    const std::vector<std::pair<std::string, double>> cells = {
+        {"c", 3.0}, {"d1", 1.0}, {"d2", 1.0}, {"e", 1.0}};
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+        for (std::size_t j = i + 1; j < cells.size(); ++j) {
+            const auto [xi, yi] = db.getCellPosition(cells[i].first);
+            const auto [xj, yj] = db.getCellPosition(cells[j].first);
+            const bool disjoint = xi + cells[i].second <= xj + 1e-9 ||
+                                  xj + cells[j].second <= xi + 1e-9 ||
+                                  yi + kRowHeight <= yj + 1e-9 || yj + kRowHeight <= yi + 1e-9;
+            BOOST_TEST(disjoint, cells[i].first << " overlaps " << cells[j].first);
+        }
+    }
+    (void)cx;
 }
 
 BOOST_AUTO_TEST_SUITE_END()

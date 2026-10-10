@@ -66,14 +66,14 @@ std::vector<Rgb> palette() {
 Graph sampleGraph() {
     Graph g;
     const auto add = [&g](const char *name, double x, double y, double w, double h, bool fixed) {
-        const std::size_t id = g.addVertex(VertexType::Cell, name);
-        Vertex &v = g.getVertex(id);
+        const std::size_t id = g.addCell(name);
+        Vertex &v = g.getCell(id);
         v.x = x;
         v.y = y;
         v.width = w;
         v.height = h;
         v.isFixed = fixed;
-        g.getVertex(id).isTerminal = fixed;
+        g.getCell(id).isTerminal = fixed;
     };
     add("fix1", 0.0, 0.0, 10.0, 10.0, true);
     add("fix2", 90.0, 0.0, 10.0, 10.0, true);
@@ -87,17 +87,17 @@ Graph sampleGraph() {
 
 /// Per-vertex coordinates in vertex order, as the renderers expect.
 std::vector<float> sampleX(const Graph &g) {
-    std::vector<float> v(g.getNumVertices(), 0.0F);
-    for (std::size_t i = 0; i < g.getNumVertices(); ++i) {
-        v[i] = static_cast<float>(g.getVertex(i).x);
+    std::vector<float> v(g.getNumCells(), 0.0F);
+    for (std::size_t i = 0; i < g.getNumCells(); ++i) {
+        v[i] = static_cast<float>(g.getCell(i).x);
     }
     return v;
 }
 
 std::vector<float> sampleY(const Graph &g) {
-    std::vector<float> v(g.getNumVertices(), 0.0F);
-    for (std::size_t i = 0; i < g.getNumVertices(); ++i) {
-        v[i] = static_cast<float>(g.getVertex(i).y);
+    std::vector<float> v(g.getNumCells(), 0.0F);
+    for (std::size_t i = 0; i < g.getNumCells(); ++i) {
+        v[i] = static_cast<float>(g.getCell(i).y);
     }
     return v;
 }
@@ -406,11 +406,11 @@ BOOST_AUTO_TEST_CASE(a_design_with_no_fixed_cells_still_gets_a_usable_box) {
     // The viewport is built from this box. A degenerate one would collapse the
     // whole plot to a point, which is what happens if it is not guarded.
     Graph g;
-    const std::size_t id = g.addVertex(VertexType::Cell, "m1");
-    g.getVertex(id).x = 10.0;
-    g.getVertex(id).y = 20.0;
-    g.getVertex(id).width = 4.0;
-    g.getVertex(id).height = 4.0;
+    const std::size_t id = g.addCell("m1");
+    g.getCell(id).x = 10.0;
+    g.getCell(id).y = 20.0;
+    g.getCell(id).width = 4.0;
+    g.getCell(id).height = 4.0;
 
     const BBox box = fixedCellBBox(g);
     BOOST_TEST(box[0] <= box[2]);
@@ -423,7 +423,7 @@ BOOST_AUTO_TEST_CASE(net_vertices_are_not_part_of_the_die) {
     // Nets have a width of zero and would otherwise anchor the box at 0,0 for a
     // design whose cells sit elsewhere.
     Graph g = sampleGraph();
-    g.addVertex(VertexType::Net, "n1");
+    g.addNet("n1");
     const BBox box = fixedCellBBox(g);
     BOOST_TEST(box[0] == 0.0);
     BOOST_TEST(box[2] == 100.0);
@@ -503,8 +503,8 @@ BOOST_AUTO_TEST_CASE(a_fixed_view_draws_the_original_positions) {
     const Graph g = sampleGraph();
     std::vector<float> moved = sampleX(g);
     std::vector<float> movedY = sampleY(g);
-    for (std::size_t i = 0; i < g.getNumVertices(); ++i) {
-        if (g.getVertex(i).type == VertexType::Cell && !g.getVertex(i).isFixed) {
+    for (std::size_t i = 0; i < g.getNumCells(); ++i) {
+        if (!g.getCell(i).isFixed) {
             moved[i] = 999.0F;
             movedY[i] = 999.0F;
         }
@@ -524,9 +524,9 @@ BOOST_AUTO_TEST_CASE(movable_cells_are_written_once_each_in_vertex_order) {
     const ScratchDir dir("svgorder");
     Graph g = sampleGraph();
     constexpr std::size_t kCells = 10000;
-    const std::size_t first = g.getNumVertices();
+    const std::size_t first = g.getNumCells();
     for (std::size_t i = 0; i < kCells; ++i) {
-        Vertex &v = g.getVertex(g.addVertex(VertexType::Cell, "o" + std::to_string(i)));
+        Vertex &v = g.getCell(g.addCell("o" + std::to_string(i)));
         v.width = 1.0;
         v.height = 1.0;
     }
@@ -687,8 +687,8 @@ BOOST_AUTO_TEST_CASE(a_legal_row_is_drawn_at_its_true_size_and_not_wider) {
     // adds up to something measurable.
     const ScratchDir dir("exactsize");
     Graph g;
-    const std::size_t id = g.addVertex(VertexType::Cell, "anchor");
-    Vertex &a = g.getVertex(id);
+    const std::size_t id = g.addCell("anchor");
+    Vertex &a = g.getCell(id);
     a.x = 0.0;
     a.y = 0.0;
     a.width = 400.0;
@@ -699,8 +699,8 @@ BOOST_AUTO_TEST_CASE(a_legal_row_is_drawn_at_its_true_size_and_not_wider) {
     constexpr double kW = 2.0;  // about three pixels at the scale below
     constexpr double kH = 2.0;
     for (int i = 0; i < kCells; ++i) {
-        const std::size_t c = g.addVertex(VertexType::Cell, "c" + std::to_string(i));
-        Vertex &v = g.getVertex(c);
+        const std::size_t c = g.addCell("c" + std::to_string(i));
+        Vertex &v = g.getCell(c);
         v.x = 20.0 + i * kW;  // exactly edge to edge, no gap and no overlap
         v.y = 20.0;
         v.width = kW;
@@ -768,10 +768,12 @@ BOOST_AUTO_TEST_CASE(a_legal_row_is_drawn_at_its_true_size_and_not_wider) {
     const double scale = avail / (1.02 * 400.0);
     const double expected = kCells * kW * scale;
     const double drawn = static_cast<double>(lastX - firstX + 1);
-    BOOST_TEST_CONTEXT("expected " << expected << " px, drawn " << drawn) {
-        BOOST_TEST(drawn <= expected + 3.0);
-        BOOST_TEST(drawn >= expected - 5.0);
-    }
+    // BOOST_TEST_CONTEXT, not BOOST_TEST_CONTEXT: the former leaves an empty
+    // statement where its scoped object is introduced, which is -Wempty-body, and
+    // it is the only construct in this file that warned.
+    BOOST_TEST_MESSAGE("expected " << expected << " px, drawn " << drawn);
+    BOOST_TEST(drawn <= expected + 3.0);
+    BOOST_TEST(drawn >= expected - 5.0);
 }
 
 BOOST_AUTO_TEST_CASE(the_rows_are_drawn_when_there_are_rows) {
@@ -781,8 +783,8 @@ BOOST_AUTO_TEST_CASE(the_rows_are_drawn_when_there_are_rows) {
     // levels are two rows.
     const ScratchDir dir("rows");
     Graph g;
-    const std::size_t id = g.addVertex(VertexType::Cell, "anchor");
-    Vertex &a = g.getVertex(id);
+    const std::size_t id = g.addCell("anchor");
+    Vertex &a = g.getCell(id);
     a.x = 0.0;
     a.y = 0.0;
     a.width = 200.0;
@@ -791,8 +793,8 @@ BOOST_AUTO_TEST_CASE(the_rows_are_drawn_when_there_are_rows) {
     a.isTerminal = true;
     for (int r = 0; r < 8; ++r) {
         for (int c = 0; c < 4; ++c) {
-            const std::size_t v = g.addVertex(VertexType::Cell, "c" + std::to_string(r * 4 + c));
-            Vertex &vert = g.getVertex(v);
+            const std::size_t v = g.addCell("c" + std::to_string(r * 4 + c));
+            Vertex &vert = g.getCell(v);
             vert.x = 20.0 + c * 8.0;
             vert.y = 20.0 + r * 40.0;  // exactly row pitch apart
             vert.width = 8.0;
@@ -818,14 +820,14 @@ BOOST_AUTO_TEST_CASE(every_cell_reaches_every_frame) {
     // More cells than any plausible draw cap, so a cap that still exists and is
     // low enough to engage would show up here as a shortfall.
     for (int i = 0; i < 4000; ++i) {
-        const std::size_t id = g.addVertex(VertexType::Cell, "extra" + std::to_string(i));
-        Vertex &v = g.getVertex(id);
+        const std::size_t id = g.addCell("extra" + std::to_string(i));
+        Vertex &v = g.getCell(id);
         v.x = static_cast<double>(i % 50);
         v.y = static_cast<double>(i / 50);
         v.width = 1.0;
         v.height = 1.0;
     }
-    const std::size_t cells = g.getNumVertices();
+    const std::size_t cells = g.getNumCells();
 
     const std::string svgPath = (dir.file("all.svg")).string();
     writeFrameSvg(svgPath, g, sampleX(g), sampleY(g), fixedCellBBox(g), 0, 1, 1.0, 1.0, 0.0, "");

@@ -1,5 +1,5 @@
 // @file kt_inputReader.h
-// Reading a design into a PlacementDB
+// Reading a design into a ktDM
 
 #pragma once
 
@@ -29,7 +29,7 @@ public:
     // design could not be read. Anything the design declared beyond the netlist
     // -- LEF/DEF fences, for one -- is installed into that database before it is
     // returned, so the reader has no reason to outlive the call.
-    [[nodiscard]] virtual std::unique_ptr<PlacementDB> read(const std::string &dirPath) = 0;
+    [[nodiscard]] virtual std::unique_ptr<ktDM> read(const std::string &dirPath) = 0;
 
     [[nodiscard]] virtual std::string_view formatName() const = 0;
 

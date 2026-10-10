@@ -94,7 +94,7 @@ void PlacementAnimator::record(const Graph &g, const std::vector<float> &x,
     }
     // Every producer supplies one coordinate per vertex; a short vector would
     // index past the end inside the renderer.
-    if (x.size() != g.getNumVertices() || y.size() != g.getNumVertices()) {
+    if (x.size() != g.getNumCells() || y.size() != g.getNumCells()) {
         return;
     }
     const auto emit = [&](const std::vector<float> &ix, const std::vector<float> &iy) {

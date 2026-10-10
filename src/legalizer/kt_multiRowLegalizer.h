@@ -46,7 +46,7 @@ struct MultiRowLegalizeResult {
 /// that fits in the resulting well is placed like any other cell.
 class MultiRowLegalizer {
 public:
-    explicit MultiRowLegalizer(PlacementDB &db);
+    explicit MultiRowLegalizer(ktDM &db);
     ~MultiRowLegalizer();
 
     MultiRowLegalizer(const MultiRowLegalizer &) = delete;
