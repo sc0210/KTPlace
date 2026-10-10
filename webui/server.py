@@ -625,6 +625,23 @@ def summary(run: Run) -> dict:
         ("offRow", "cells out of rows"),
     )
     result: dict = {}
+    # The engine reports each stage's own HPWL now. The final figure is the
+    # "HPWL after" row of the detailed-placement table -- only that one: the
+    # legalizers and the global placer print "HPWL after" rows too, and a run
+    # stopped before detailed placement has no final HPWL to show. Runs from
+    # before the change carry an "HPWL detailed" line, which pairs looks for.
+    legacy = any("hpwl detailed" in ln.lower() for ln in lines)
+    if not legacy:
+        pairs = tuple(p for p in pairs if p[0] != "hpwl")
+        start = max((i for i, ln in enumerate(lines) if "detailed placement (" in ln.lower()),
+                    default=None)
+        if start is not None:
+            for ln in lines[start:start + 20]:
+                if "hpwl after" in ln.lower():
+                    fields = [f.strip() for f in ln.split("|") if f.strip()]
+                    if len(fields) >= 2:
+                        result["hpwl"] = fields[-1]
+                    break
     for key, needle in pairs:
         vals = []
         for ln in lines:
