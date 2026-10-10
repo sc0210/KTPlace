@@ -150,7 +150,7 @@ details[open] summary { margin-bottom: 8px; color: var(--text); }
 #execrow { display: flex; gap: 6px; margin: 10px 0 0; }
 #execrow input { flex: 1; font-family: var(--mono); font-size: 12px; }
 #execrow button { padding: 7px 12px; }
-#execout { margin: 8px 0 0; padding: 8px 10px; height: 200px; overflow: auto;
+#execout, #buildout { margin: 8px 0 0; padding: 8px 10px; height: 200px; overflow: auto;
   white-space: pre-wrap; background: #0d1216; border: 1px solid var(--line);
   border-radius: 6px; font: 11px/1.4 var(--mono); color: #b7c6d0; }
 #historysec { margin: 0 20px 20px; }
@@ -213,6 +213,20 @@ code { font-family: var(--mono); }
         </details>
         <div style="margin-top:12px"><button class="primary" id="runbtn">Run placement</button></div>
         <div class="hint" id="benchnote"></div>
+      </div>
+    </section>
+    <section style="margin-top:16px">
+      <h2>Engine build</h2>
+      <div class="pad">
+        <div class="hint" style="margin-top:0">Recompiles <code>build/bin/ktplace</code>
+          in the dev container after you change the sources. The next run picks
+          the new binary up by itself; the console needs no restart.</div>
+        <div class="btnrow" style="margin-top:10px">
+          <button class="primary" id="buildbtn">Rebuild engine</button>
+          <button id="buildstop">Stop</button>
+          <span class="hint" id="buildmeta" style="margin:0"></span>
+        </div>
+        <pre id="buildout" tabindex="0" hidden></pre>
       </div>
     </section>
     <section style="margin-top:16px">
@@ -924,6 +938,77 @@ async function stopCommand() {
   catch (e) { /* already gone */ }
 }
 
+// ------------------------------------------------------------- engine build
+// One fixed command in the dev container (`make`, over the Docker socket), not
+// a shell here: polled the same way, but there is a single slot, so no id.
+let buildTimer = null, buildOffset = 0, buildBusy = false;
+
+async function startBuild() {
+  if (buildTimer) return;
+  $("buildout").hidden = false;
+  $("buildout").textContent = "";
+  $("buildmeta").textContent = "starting…";
+  buildOffset = 0;
+  $("buildbtn").disabled = true;
+  try {
+    await api("/api/build", {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: "{}",
+    });
+    buildTimer = setInterval(pollBuild, 600);
+    pollBuild();
+  } catch (e) {
+    $("buildout").textContent = "error: " + e.message + "\n";
+    $("buildmeta").textContent = "";
+    $("buildbtn").disabled = false;
+  }
+}
+
+async function pollBuild() {
+  if (buildBusy) return;   // same overlap guard as the run poll
+  buildBusy = true;
+  try {
+    const data = await api(`/api/build?offset=${buildOffset}`);
+    if (data.text) {
+      appendTail($("buildout"), data.text);
+      buildOffset = data.offset;
+      $("buildout").scrollTop = $("buildout").scrollHeight;
+    }
+    const bits = [data.status, fmtElapsed(data.elapsed)];
+    if (data.exitCode != null) bits.push(`exit ${data.exitCode}`);
+    if (data.note) bits.push(data.note);
+    $("buildmeta").textContent = bits.join(" · ");
+    $("buildbtn").disabled = data.status === "running";
+    if (data.done) { clearInterval(buildTimer); buildTimer = null; }
+  } catch (e) {
+    $("buildmeta").textContent = "lost the build: " + e.message;
+    clearInterval(buildTimer); buildTimer = null;
+    $("buildbtn").disabled = false;
+  } finally {
+    buildBusy = false;
+  }
+}
+
+async function stopBuild() {
+  try { await api("/api/build", {method: "DELETE"}); }
+  catch (e) { /* already gone */ }
+}
+
+async function loadBuild() {
+  // The last build's outcome survives a page reload, so it is shown without
+  // starting anything.
+  try {
+    const data = await api("/api/build?offset=0");
+    if (data.status === "idle") return;
+    $("buildout").hidden = false;
+    if (data.text) { appendTail($("buildout"), data.text); buildOffset = data.offset; }
+    const bits = [data.status, fmtElapsed(data.elapsed)];
+    if (data.exitCode != null) bits.push(`exit ${data.exitCode}`);
+    if (data.note) bits.push(data.note);
+    $("buildmeta").textContent = bits.join(" · ");
+    if (data.status === "running") buildTimer = setInterval(pollBuild, 600);
+  } catch (e) { /* console without the socket mount */ }
+}
+
 // ---------------------------------------------------------------- boot
 logEl.addEventListener("scroll", () => {
   stick = logEl.scrollTop + logEl.clientHeight > logEl.scrollHeight - 60;
@@ -939,12 +1024,15 @@ $("presetfast").onclick = () => {
 $("presetclear").onclick = () => { $("env").value = ""; };
 $("execrun").onclick = runCommand;
 $("execstop").onclick = stopCommand;
+$("buildbtn").onclick = startBuild;
+$("buildstop").onclick = stopBuild;
 $("execcmd").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); runCommand(); }
 });
 loadBenchmarks();
 refreshRuns();
 refreshMachine();
+loadBuild();
 runsListTimer = setInterval(refreshRuns, 5000);
 setInterval(refreshMachine, 2000);
 </script>

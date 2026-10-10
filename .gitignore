@@ -62,6 +62,7 @@ benchmark/ICCAD04/*
 .DS_Store
 .claude
 .opencode
+.playwright-mcp/
 logs/
 
 # Local editor tooling (kept out of the repo)

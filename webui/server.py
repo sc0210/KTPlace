@@ -29,12 +29,16 @@ Endpoints
   POST   /api/exec               run a command in the container: {"cmd"}
   GET    /api/exec/<id>?offset=  its output so far
   DELETE /api/exec/<id>          stop it
+  POST   /api/build              rebuild the engine in the dev container
+  GET    /api/build?offset=      the build's output so far
+  DELETE /api/build              stop the build
   GET    /runs/<id>/<path>       a file of a run (gallery, png, placed.pl, log)
 """
 
 from __future__ import annotations
 
 import datetime
+import http.client
 import json
 import os
 import pathlib
@@ -42,6 +46,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -851,6 +856,240 @@ def stop_exec(ex: Exec, reason: str | None = None) -> None:
     threading.Thread(target=escalate, daemon=True).start()
 
 
+# ------------------------------------------------------------------- build
+# Rebuild the engine in the dev container, from the browser. The console image
+# deliberately carries no toolchain, and the sources live in the dev container,
+# not here -- the only bridge is the Docker socket, which compose.yaml mounts
+# into this container. Talking to it is a few lines of stdlib (http.client
+# over AF_UNIX); the alternative -- SSH with a key this container would have
+# to be given -- is worse in every way.
+#
+# The command is fixed, so no request content reaches a shell anywhere: _trusted
+# still gates the endpoints, the same as /api/exec, but there is nothing to
+# inject even past it. One build at a time, like runs (MAX_RUNS == 1); a second
+# POST while one runs gets a 409.
+DOCKER_SOCKET = os.environ.get("KTPLACE_DOCKER_SOCKET", "/var/run/docker.sock")
+DEV_CONTAINER = os.environ.get("KTPLACE_DEV_CONTAINER", "ktplace-dev")
+# A marker make variable, so Stop signals exactly this build and nothing else
+# sharing the container: pkill matches this string, and `make VAR=1` on the
+# command line otherwise just sets a variable the build ignores.
+BUILD_MARKER = "KTPLACE_CONSOLE_BUILD=1"
+BUILD_CMD = ["bash", "-lc", f'make -j"$(nproc)" {BUILD_MARKER}']
+BUILD_CMD_TEXT = f'make -j"$(nproc)" {BUILD_MARKER}  (in {DEV_CONTAINER}:/workspace)'
+BUILD_TIMEOUT = max(60.0, float(os.environ.get("KTPLACE_WEB_BUILD_TIMEOUT", "3600")))
+
+
+class BuildUnavailable(Exception):
+    pass
+
+
+class _UnixHTTP(http.client.HTTPConnection):
+    """http.client over a unix socket, for the Docker Engine API."""
+
+    def __init__(self, sock_path: str, timeout: float = 30.0):
+        super().__init__("localhost", timeout=timeout)
+        self._sock_path = sock_path
+
+    def connect(self) -> None:
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self._sock_path)
+
+
+def _docker(method: str, path: str, body=None, timeout: float = 30.0):
+    """One Engine API call. Returns the parsed JSON (None for an empty body);
+    raises BuildUnavailable with a page-ready message on anything else."""
+    if not os.path.exists(DOCKER_SOCKET):
+        raise BuildUnavailable(
+            "the Docker socket is not mounted in the console container -- "
+            "recreate it with the socket mount (compose.yaml has it)")
+    try:
+        conn = _UnixHTTP(DOCKER_SOCKET, timeout=timeout)
+        payload = json_dumps(body).encode("utf-8") if body is not None else None
+        conn.request(method, path, body=payload,
+                     headers={"Content-Type": "application/json"} if payload else {})
+        resp = conn.getresponse()
+        data = resp.read()
+        status = resp.status
+        conn.close()
+    except OSError as e:
+        raise BuildUnavailable(f"could not reach the Docker socket: {e}")
+    if status == 404:
+        raise BuildUnavailable(
+            f"no container named {DEV_CONTAINER!r} -- is the dev container up?")
+    if status >= 400:
+        detail = ""
+        try:
+            detail = (json_loads(data.decode("utf-8", "replace")) or {}).get("message", "")
+        except Exception:
+            pass
+        raise BuildUnavailable(f"the engine refused the build ({status}) {detail}".strip())
+    if not data:
+        return None
+    try:
+        return json_loads(data.decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+
+def _read_exact(resp, n: int) -> bytes:
+    buf = b""
+    while len(buf) < n:
+        part = resp.read(n - len(buf))
+        if not part:
+            break
+        buf += part
+    return buf
+
+
+def _docker_exec_start(exec_id: str, out_fh) -> None:
+    """Start the exec and demux its multiplexed stream into out_fh. Blocks
+    until the command exits; the exit code is not in the stream, so the caller
+    inspects the exec afterwards. Output is capped at EXEC_MAX_BYTES, the same
+    as a command's -- a flooded build log stops the page from filling the disk."""
+    conn = _UnixHTTP(DOCKER_SOCKET, timeout=BUILD_TIMEOUT + 60.0)
+    try:
+        conn.request("POST", f"/exec/{exec_id}/start",
+                     body=json_dumps({"Detach": False, "Tty": False}).encode("utf-8"),
+                     headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        if resp.status >= 400:
+            raise BuildUnavailable(f"the engine refused to start the build ({resp.status})")
+        written = 0
+        while True:
+            hdr = _read_exact(resp, 8)
+            if len(hdr) < 8:
+                break
+            size = int.from_bytes(hdr[4:8], "big")
+            if size == 0:
+                continue
+            chunk = _read_exact(resp, size)
+            if chunk:
+                room = EXEC_MAX_BYTES - written
+                if room > 0:
+                    out_fh.write(chunk[:room])
+                    out_fh.flush()
+                    written += min(len(chunk), room)
+            if len(chunk) < size:
+                break
+    except OSError as e:
+        raise BuildUnavailable(f"lost the build's output: {e}")
+    finally:
+        conn.close()
+
+
+class _Build:
+    def __init__(self):
+        self.status = "idle"  # idle | running | done | failed
+        self.exec_id: str | None = None
+        self.exit_code: int | None = None
+        self.started = 0.0
+        self.ended: float | None = None
+        self.note: str | None = None
+        self.path = EXEC_ROOT / "build.out"
+
+    def elapsed(self) -> float:
+        if self.status == "idle":
+            return 0.0
+        end = self.ended if self.ended is not None else time.time()
+        return max(0.0, end - self.started)
+
+
+_BUILD = _Build()
+_BUILD_LOCK = threading.Lock()
+
+
+def start_build() -> _Build:
+    with _BUILD_LOCK:
+        if _BUILD.status == "running":
+            raise BuildUnavailable("a build is already running")
+        created = _docker("POST", f"/containers/{DEV_CONTAINER}/exec",
+                          {"AttachStdout": True, "AttachStderr": True,
+                           "User": "dev", "WorkingDir": "/workspace", "Cmd": BUILD_CMD}) or {}
+        eid = created.get("Id")
+        if not eid:
+            raise BuildUnavailable("the engine would not create the build")
+        EXEC_ROOT.mkdir(parents=True, exist_ok=True)
+        try:
+            _BUILD.path.write_bytes(b"")
+        except OSError:
+            pass
+        _BUILD.exec_id = eid
+        _BUILD.exit_code = None
+        _BUILD.started = time.time()
+        _BUILD.ended = None
+        _BUILD.note = None
+        _BUILD.status = "running"
+    threading.Thread(target=_reap_build, daemon=True).start()
+    return _BUILD
+
+
+def _reap_build() -> None:
+    timer = threading.Timer(BUILD_TIMEOUT, stop_build,
+                            args=(f"ran longer than {BUILD_TIMEOUT:g} s",))
+    timer.daemon = True
+    timer.start()
+    code = None
+    try:
+        with open(_BUILD.path, "ab") as out:
+            _docker_exec_start(_BUILD.exec_id, out)
+        inspected = _docker("GET", f"/exec/{_BUILD.exec_id}/json") or {}
+        code = inspected.get("ExitCode")
+    except BuildUnavailable as e:
+        if _BUILD.note is None:
+            _BUILD.note = str(e)
+    timer.cancel()
+    with _BUILD_LOCK:
+        _BUILD.exit_code = code
+        _BUILD.status = "done" if code == 0 else "failed"
+        _BUILD.ended = time.time()
+    if _BUILD.note:
+        try:
+            with open(_BUILD.path, "ab") as fh:
+                fh.write(f"\n[build {_BUILD.status}: {_BUILD.note}]\n".encode())
+        except OSError:
+            pass
+
+
+def stop_build(reason: str | None = None) -> bool:
+    """Interrupt the console's build; True when one was running. A best effort
+    through a second exec: the whole process *group* gets SIGINT, not just the
+    top make -- INT to the top make alone leaves its sub-makes and compilers
+    running, and the build visibly continues into the link. An exec session is
+    its own group (pid == pgid), so the group is exactly this build's tree;
+    the marker selects the group, so nothing else in the container is touched."""
+    with _BUILD_LOCK:
+        if _BUILD.status != "running":
+            return False
+        if reason:
+            _BUILD.note = reason
+    kill = (f"p=$(pgrep -f '{BUILD_MARKER}' | head -1); "
+            f"g=$(ps -o pgid= -p \"$p\" | tr -d ' '); "
+            f"[ -n \"$g\" ] && kill -INT -\"$g\" || pkill -INT -f '{BUILD_MARKER}'")
+    try:
+        created = _docker("POST", f"/containers/{DEV_CONTAINER}/exec",
+                          {"AttachStdout": False, "AttachStderr": False,
+                           "User": "dev", "WorkingDir": "/workspace",
+                           "Cmd": ["bash", "-lc", kill]}) or {}
+        if created.get("Id"):
+            _docker("POST", f"/exec/{created['Id']}/start",
+                    {"Detach": True, "Tty": False}, timeout=10.0)
+    except BuildUnavailable:
+        pass
+    return True
+
+
+def read_build(offset: int) -> tuple[str, int, bool]:
+    finished = _BUILD.status != "running"
+    return read_chunk(_BUILD.path, offset, finished)
+
+
+def _build_view() -> dict:
+    return {"status": _BUILD.status, "exitCode": _BUILD.exit_code,
+            "elapsed": round(_BUILD.elapsed(), 2), "note": _BUILD.note,
+            "cmd": BUILD_CMD_TEXT}
+
+
 def host_name(netloc: str) -> str:
     """The host part of a Host header or URL netloc, lower-cased, port dropped:
     "LOCALHOST:8080" -> "localhost", "[::1]:8080" -> "::1"."""
@@ -990,6 +1229,12 @@ class Handler(BaseHTTPRequestHandler):
                 "status": ex.status, "exitCode": ex.exit_code,
                 "cmd": ex.cmd, "elapsed": round(ex.elapsed(), 2),
             })
+        if parsed.path == "/api/build":
+            qs = urllib.parse.parse_qs(parsed.query)
+            offset = int(qs.get("offset", ["0"])[0])
+            text, new_off, done = read_build(offset)
+            return self._json(200, {"offset": new_off, "text": text, "done": done,
+                                    **_build_view()})
         if parsed.path == "/api/runs":
             runs = []
             for r in sorted(_RUNS.values(), key=lambda r: r.started, reverse=True):
@@ -1036,6 +1281,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._post_run()
         if path == "/api/exec":
             return self._post_exec()
+        if path == "/api/build":
+            return self._post_build()
         if path.startswith("/api/runs/"):
             parts = path[len("/api/runs/"):].split("/")
             run = find_run(urllib.parse.unquote(parts[0]))
@@ -1105,6 +1352,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(500, {"error": f"could not start the command: {e}"})
         return self._json(201, self._exec_view(ex))
 
+    def _post_build(self):
+        with _BUILD_LOCK:
+            running = _BUILD.status == "running"
+        if running:
+            return self._json(409, {"error": "a build is already running"})
+        try:
+            start_build()
+        except BuildUnavailable as e:
+            return self._json(503, {"error": str(e)})
+        except OSError as e:
+            return self._json(500, {"error": f"could not start the build: {e}"})
+        return self._json(201, _build_view())
+
     def do_DELETE(self):
         if not self._trusted(mutating=True):
             return
@@ -1123,6 +1383,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(404, {"error": "no such command"})
             stop_exec(ex)
             return self._json(200, {"stopped": eid})
+        if path == "/api/build":
+            stopped = stop_build("stopped from the console")
+            return self._json(200, {"stopped": stopped, **_build_view()})
         return self._json(404, {"error": "not found"})
 
     # -- bodies ------------------------------------------------------

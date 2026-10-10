@@ -74,6 +74,11 @@ services:
       # Runs survive `down`/restarts; the server also adopts existing runs on
       # start, so history persists.
       - web-runs:/ktplace/runs
+      # The Docker socket, so the console's Rebuild button can run `make` in
+      # the dev container -- the one compile the shell and the browser share.
+      # The server only ever runs that single fixed command through it; the
+      # socket itself never reaches the browser.
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       # The in-page command runner is a shell in this container, so it is off by
       # default. On here for local development: the port is loopback-only, and
