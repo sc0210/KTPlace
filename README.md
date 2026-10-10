@@ -6,6 +6,11 @@ An open-source know thyself placement engine.
 Requirements: g++ 13+ (C++23), oneTBB, Boost.Iostreams, zlib, libfmt (`libfmt-dev`).
 
 ```sh
+sudo apt-get install -y --no-install-recommends \
+    g++ libtbb-dev libboost-iostreams-dev libboost-test-dev zlib1g-dev libfmt-dev clang-format
+```
+
+```sh
 make            # builds build/bin/ktplace
 make rebuild    # clean + rebuild
 ```
