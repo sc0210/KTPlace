@@ -255,6 +255,11 @@ private:
     double avgCellH_ = 1.0;
     double rowH_ = 1.0;       // placement-row height, derived from row count
     double anchorEps_ = 1.0;  // 1.5 * row height, per ComPLx/SimPL
+    // Constant-stiffness pseudonets weigh alpha in units of 1/length, against B2B
+    // edges that weigh 1/distance in the design's own units, so their balance
+    // depends on the unit system. The alpha schedule was calibrated on adaptec1,
+    // whose rows are kCalibRowHeight high; this rescales it to the design's rows.
+    double anchorScale_ = 1.0;
 
     DensityGrid grid_;
     double g_ = 1.0;
@@ -507,6 +512,22 @@ void SimplePlacer::Impl::buildGrid(const SimplParams &P) {
     //  objective function strictly convex. In SimPL and SimPLR, eps is
     //  calculated as 1.5 times row height."
     anchorEps_ = 1.5 * rowH_;
+    {
+        // adaptec1's .scl row height: the design the alpha schedule was tuned on,
+        // so the scale is exactly 1 there and its placement is unchanged. Measured
+        // on mgc_superblue16_a (rows 900 units high) before this: anchors started
+        // at 7x the interconnect stiffness and ended at 310x, against 0.09x and 2x
+        // on adaptec1, so the global loop solved in one CG step to the anchors and
+        // never optimised wirelength.
+        constexpr double kCalibRowHeight = 12.0;
+        double rowHeight = 0.0;
+        for (const PlacementDB::RowInfo &r : db_.getRows()) {
+            if (r.height > 0.0 && (rowHeight == 0.0 || r.height < rowHeight)) {
+                rowHeight = r.height;
+            }
+        }
+        anchorScale_ = rowHeight > 0.0 ? kCalibRowHeight / rowHeight : 1.0;
+    }
     ktlog.trace(
         "mean cell {:.4g} x {:.4g}, row height {:.4g}, anchor eps {:.4g} "
         "(= 1.5 rows)",
@@ -908,7 +929,7 @@ void SimplePlacer::Impl::buildB2B(const std::vector<double> &px, const std::vect
         if (useAnchors) {
             for (std::size_t i = 0; i < numMovable_; ++i) {
                 const double anchor = (dim == 0) ? anchorX_[i] : anchorY_[i];
-                double w = alpha;
+                double w = alpha * anchorScale_;
                 if (par_.pseudonetLaw == SimplParams::PseudonetLaw::InverseLength) {
                     // alpha / distance, with the same length floor as a B2B edge.
                     // The floor matters most exactly where the paper's initial
@@ -960,7 +981,7 @@ void SimplePlacer::Impl::buildB2B(const std::vector<double> &px, const std::vect
     for (std::size_t i = 0; i < numMovable_; ++i) {
         wlDiag += Ax_.diag[i];
         if (useAnchors && par_.pseudonetLaw == SimplParams::PseudonetLaw::ConstantStiffness) {
-            wlDiag -= alpha;
+            wlDiag -= alpha * anchorScale_;
         }
     }
     ktlog.trace("  b2b: {} x-edges, {} y-edges ({:.2f}/{:.2f} per cell)", nnzX, nnzY,
